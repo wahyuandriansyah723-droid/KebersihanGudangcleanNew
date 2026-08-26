@@ -76,3 +76,32 @@ export const initialReports: Report[] = [];
 
 // Initial Tasks Assigned
 export const initialTasks: Task[] = [];
+
+// Default System Configuration Settings
+export const defaultSystemSettings = {
+  id: 'main-settings',
+  companyName: 'PT Logistik Prima Nusantara',
+  systemName: 'GudangClean Management System',
+  tagline: 'Layanan Pemeliharaan Kebersihan & Standardisasi Mutu Gudang Logistik Terpadu',
+  auditorName: 'Ahmad Subarjo, M.T.',
+  auditorTitle: 'Lead Logistics & Quality Auditor',
+  auditorCompany: 'PT Inspeksi Mutu Nasional',
+  auditorSignature: '',
+  kepalaSignerName: 'Wahyu Andriansyah, S.T.',
+  kepalaSignerTitle: 'Kepala Gudang & Fasilitas Terdaftar',
+  kepalaSignerCompany: 'PT Logistik Prima Nusantara',
+  kepalaSignature: '',
+  cleanerSignerName: 'Budi Santoso & Tim Kebersihan',
+  cleanerSignerTitle: 'Koordinator Pelaksana Bersih Area',
+  cleanerSignerCompany: 'Divisi Fasilitas & Cleanliness',
+  cleanerSignature: '',
+  documentPrefix: 'GC-AUDIT',
+  contactEmail: 'audit@gudangclean.com',
+  contactPhone: '(021) 8092-1029',
+  workShiftStart: '07:00',
+  workShiftEnd: '16:00',
+  allowAutoApprove: false,
+  minCleanDurationMinutes: 30,
+  emergencyAlertEnabled: true,
+  notesFooter: 'Dokumen ini diterbitkan secara elektronik oleh Sistem Informasi Bersih Area (GudangClean SIBA) dan sah digunakan untuk keperluan audit mutu operasional.'
+};

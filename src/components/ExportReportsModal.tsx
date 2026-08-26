@@ -4,49 +4,106 @@ import {
   X, 
   FileText, 
   FileSpreadsheet, 
-  Printer, 
   SlidersHorizontal, 
-  CalendarDays, 
   Building, 
-  Sparkles, 
   CheckCircle2, 
-  ShieldCheck, 
-  FileCode,
-  Info,
-  ChevronRight,
-  UserCheck
+  Info, 
+  Download, 
+  Check, 
+  PenTool, 
+  Trash2, 
+  FileCheck2, 
+  LayoutDashboard, 
+  Eye, 
+  BarChart3, 
+  AlertTriangle, 
+  Search, 
+  Layers, 
+  RotateCcw
 } from 'lucide-react';
-import { Report, Warehouse, User } from '../types';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { Report, Warehouse, User as UserType, SystemSettings } from '../types';
+import SignaturePadModal from './SignaturePadModal';
 
 interface ExportReportsModalProps {
   isOpen: boolean;
   onClose: () => void;
   reports: Report[];
   warehouses: Warehouse[];
-  users: User[];
-  currentUser: User;
+  users: UserType[];
+  currentUser: UserType;
+  systemSettings?: SystemSettings;
 }
+
+type TabType = 'DASHBOARD' | 'PREVIEW_SHEET' | 'SIGNERS' | 'FILTER';
 
 export default function ExportReportsModal({
   isOpen,
   onClose,
   reports,
   warehouses,
-  users,
-  currentUser
+  currentUser,
+  systemSettings
 }: ExportReportsModalProps) {
+  // Navigation Tab State
+  const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
+
   // Filters State
   const [exportWarehouse, setExportWarehouse] = useState<string>('ALL');
   const [exportStatus, setExportStatus] = useState<string>('ALL');
   const [exportPeriod, setExportPeriod] = useState<string>('ALL');
-  
-  // Custom Audit Document Metadata (maintained silently)
-  const [docNumber] = useState<string>(() => `GC-AUDIT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`);
-  const [auditorName] = useState<string>('Ahmad Subarjo, M.T.');
-  const [companyName] = useState<string>('PT Logistik Prima Nusantara');
-  const [includePhotos] = useState<boolean>(true);
-  const [includeSignatures] = useState<boolean>(false);
-  const [docTemplate] = useState<'SIBA_LOGBOOK' | 'DETAILED_AUDIT' | 'SIMPLE_LIST'>('SIBA_LOGBOOK');
+  const [searchKeyword, setSearchKeyword] = useState<string>('');
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
+
+  // Custom Signers & Signature States (Live Editable for this Export)
+  const [cleanerName, setCleanerName] = useState<string>(
+    systemSettings?.cleanerSignerName || 'Budi Santoso & Tim Kebersihan'
+  );
+  const [cleanerTitle, setCleanerTitle] = useState<string>(
+    systemSettings?.cleanerSignerTitle || 'Koordinator Pelaksana Bersih Area'
+  );
+  const [cleanerCompany, setCleanerCompany] = useState<string>(
+    systemSettings?.cleanerSignerCompany || 'Divisi Fasilitas & Cleanliness'
+  );
+  const [cleanerSignature, setCleanerSignature] = useState<string>(
+    systemSettings?.cleanerSignature || ''
+  );
+
+  const [kepalaName, setKepalaName] = useState<string>(
+    systemSettings?.kepalaSignerName || currentUser?.name || 'Wahyu Andriansyah, S.T.'
+  );
+  const [kepalaTitle, setKepalaTitle] = useState<string>(
+    systemSettings?.kepalaSignerTitle || 'Kepala Gudang & Fasilitas Terdaftar'
+  );
+  const [kepalaCompany, setKepalaCompany] = useState<string>(
+    systemSettings?.kepalaSignerCompany || systemSettings?.companyName || 'PT Logistik Prima Nusantara'
+  );
+  const [kepalaSignature, setKepalaSignature] = useState<string>(
+    systemSettings?.kepalaSignature || ''
+  );
+
+  const [auditorName, setAuditorName] = useState<string>(
+    systemSettings?.auditorName || 'Ahmad Subarjo, M.T.'
+  );
+  const [auditorTitle, setAuditorTitle] = useState<string>(
+    systemSettings?.auditorTitle || 'Lead Logistics & Quality Auditor'
+  );
+  const [auditorCompany, setAuditorCompany] = useState<string>(
+    systemSettings?.auditorCompany || 'PT Inspeksi Mutu Nasional'
+  );
+  const [auditorSignature, setAuditorSignature] = useState<string>(
+    systemSettings?.auditorSignature || ''
+  );
+
+  // Signature Modal Target
+  const [activeSignatureTarget, setActiveSignatureTarget] = useState<'cleaner' | 'kepala' | 'auditor' | null>(null);
+
+  // Custom Audit Document Metadata
+  const docPrefix = systemSettings?.documentPrefix || 'GC-AUDIT';
+  const [docNumber] = useState<string>(() => `${docPrefix}-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`);
+  const companyName = systemSettings?.companyName || 'PT Logistik Prima Nusantara';
 
   if (!isOpen) return null;
 
@@ -92,159 +149,372 @@ export default function ExportReportsModal({
     return true;
   };
 
-  // Filtered reports specifically for export
+  // Filtered reports specifically for export & dashboard
   const getFilteredReportsForExport = () => {
     return reports.filter(report => {
       const matchesWarehouse = exportWarehouse === 'ALL' || report.warehouse === exportWarehouse;
       const matchesStatus = exportStatus === 'ALL' || report.status === exportStatus;
       const matchesPeriod = getIsInPeriod(report.timestamp, exportPeriod);
-      return matchesWarehouse && matchesStatus && matchesPeriod;
+      const matchesSearch = !searchKeyword.trim() || 
+        report.warehouse.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+        report.description.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+        (report.feedback && report.feedback.toLowerCase().includes(searchKeyword.toLowerCase())) ||
+        report.status.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+        (report.cleanerName && report.cleanerName.toLowerCase().includes(searchKeyword.toLowerCase()));
+
+      return matchesWarehouse && matchesStatus && matchesPeriod && matchesSearch;
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   };
 
   const filteredExportData = getFilteredReportsForExport();
 
-  // 1. GENERATE EXCEL (Styled HTML spreadsheet XML format)
+  // Metric calculations
+  const totalReportsCount = filteredExportData.length;
+  const approvedCount = filteredExportData.filter(r => r.status === 'APPROVED').length;
+  const pendingCount = filteredExportData.filter(r => r.status === 'PENDING').length;
+  const rejectedCount = filteredExportData.filter(r => r.status === 'REJECTED').length;
+  const approvalRate = totalReportsCount > 0 ? Math.round((approvedCount / totalReportsCount) * 100) : 100;
+
+  const cleanWarehousesCount = warehouses.filter(w => w.status === 'BERSIH').length;
+  const inProgressWarehousesCount = warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length;
+  const dirtyWarehousesCount = warehouses.filter(w => w.status === 'KOTOR').length;
+  const warehouseCleanRate = warehouses.length > 0 ? Math.round((cleanWarehousesCount / warehouses.length) * 100) : 0;
+
+  // DIRECT AUDIT PDF DOWNLOAD (Using jsPDF & AutoTable with Embedded Signatures)
+  const handleDownloadAuditPDFDirectly = () => {
+    setIsExportingPdf(true);
+    try {
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const data = filteredExportData;
+      const dateStr = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      const company = systemSettings?.companyName || companyName;
+      const auditor = auditorName;
+      const prefix = systemSettings?.documentPrefix || 'GC-AUDIT';
+      const auditDocId = `${prefix}-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+      const cleanCount = warehouses.filter(w => w.status === 'BERSIH').length;
+      const inProgressCount = warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length;
+      const dirtyCount = warehouses.filter(w => w.status === 'KOTOR').length;
+      const cleanPercentage = warehouses.length > 0 ? Math.round((cleanCount / warehouses.length) * 100) : 0;
+
+      // Header Dark Top Banner
+      doc.setFillColor(15, 16, 22); // #0f1016
+      doc.rect(0, 0, 210, 38, 'F');
+
+      // Emerald accent divider
+      doc.setFillColor(16, 185, 129); // emerald-500
+      doc.rect(0, 37.2, 210, 1.2, 'F');
+
+      // Brand Logo & Title
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(17);
+      doc.text("GUDANGCLEAN", 14, 15);
+
+      doc.setFontSize(8.5);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(161, 161, 170); // zinc-400
+      doc.text(systemSettings?.systemName || "Sistem Pemantauan Kebersihan Terpadu - Gudang A s/d L", 14, 21);
+      doc.text(systemSettings?.tagline || "Layanan Pemeliharaan Kebersihan & Standardisasi Mutu Gudang Logistik", 14, 26);
+      doc.text(`Instansi: ${company}  |  Auditor Mutu: ${auditor}`, 14, 31);
+
+      // Document Number Badge on top-right
+      doc.setFillColor(24, 24, 32);
+      doc.roundedRect(138, 7, 58, 23, 2, 2, 'F');
+      doc.setTextColor(110, 231, 183);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(7.5);
+      doc.text("DOKUMEN AUDIT RESMI", 141, 13);
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(8.5);
+      doc.text(auditDocId, 141, 19);
+      doc.setTextColor(161, 161, 170);
+      doc.setFontSize(7);
+      doc.setFont("Helvetica", "normal");
+      doc.text(`Tgl Cetak: ${dateStr}`, 141, 25);
+
+      // Title Section
+      doc.setTextColor(15, 23, 42);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text("BERITA ACARA & LAPORAN AUDIT KEBERSIHAN", 14, 46);
+
+      doc.setFontSize(8);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(100, 116, 139);
+      const periodText = exportPeriod === 'ALL' ? 'Semua Periode' : 
+                         exportPeriod === 'TODAY' ? 'Hari Ini' : 
+                         exportPeriod === 'WEEK' ? '7 Hari Terakhir' : '30 Hari Terakhir';
+      const warehouseText = exportWarehouse === 'ALL' ? 'Semua Gudang (A-L)' : `Gudang ${exportWarehouse}`;
+      doc.text(`Filter Cakupan: ${warehouseText}  |  Periode: ${periodText}  |  Total Laporan: ${data.length} data`, 14, 51);
+
+      // Metric Summary Boxes
+      // Box 1: Persentase Bersih
+      doc.setFillColor(240, 253, 244);
+      doc.setDrawColor(167, 243, 208);
+      doc.roundedRect(14, 56, 42, 15, 1.5, 1.5, 'FD');
+      doc.setTextColor(21, 128, 61);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`${cleanPercentage}%`, 18, 64);
+      doc.setFontSize(6.5);
+      doc.text("Lolos Standar Bersih", 18, 68.5);
+
+      // Box 2: Gudang Bersih
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(60, 56, 42, 15, 1.5, 1.5, 'FD');
+      doc.setTextColor(51, 65, 85);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`${cleanCount} Area`, 64, 64);
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Kategori Bersih Terverifikasi", 64, 68.5);
+
+      // Box 3: Gudang Proses
+      doc.setFillColor(254, 252, 232);
+      doc.setDrawColor(254, 240, 138);
+      doc.roundedRect(106, 56, 42, 15, 1.5, 1.5, 'FD');
+      doc.setTextColor(161, 98, 7);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`${inProgressCount} Area`, 110, 64);
+      doc.setFontSize(6.5);
+      doc.text("Dalam Pembersihan", 110, 68.5);
+
+      // Box 4: Gudang Kotor
+      doc.setFillColor(254, 242, 242);
+      doc.setDrawColor(254, 202, 202);
+      doc.roundedRect(152, 56, 44, 15, 1.5, 1.5, 'FD');
+      doc.setTextColor(185, 28, 28);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`${dirtyCount} Area`, 156, 64);
+      doc.setFontSize(6.5);
+      doc.text("Perlu Tindak Lanjut Segera", 156, 68.5);
+
+      // Table Header and Body Generation
+      const tableHeaders = [
+        ["No", "Waktu / Tgl", "Gudang", "Petugas", "Catatan Kebersihan", "Feedback Kepala", "Status"]
+      ];
+
+      const tableRows = data.map((item, index) => {
+        const dateObj = new Date(item.timestamp);
+        const formattedDate = `${dateObj.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' })} ${dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+        const statusLabel = item.status === 'APPROVED' ? 'DISETUJUI' : item.status === 'REJECTED' ? 'DITOLAK' : 'MENUNGGU';
+
+        return [
+          String(index + 1),
+          formattedDate,
+          `Gudang ${item.warehouse}`,
+          item.cleanerName || "Petugas",
+          item.description || "-",
+          item.feedback || "-",
+          statusLabel
+        ];
+      });
+
+      // AutoTable Plugin Execution
+      autoTable(doc, {
+        head: tableHeaders,
+        body: tableRows,
+        startY: 76,
+        theme: 'striped',
+        headStyles: {
+          fillColor: [15, 16, 22],
+          textColor: [255, 255, 255],
+          fontSize: 7.5,
+          fontStyle: 'bold',
+          halign: 'left',
+          cellPadding: 2.2
+        },
+        bodyStyles: {
+          fontSize: 7,
+          cellPadding: 2,
+          textColor: [30, 41, 59]
+        },
+        columnStyles: {
+          0: { cellWidth: 8, halign: 'center' },
+          1: { cellWidth: 26 },
+          2: { cellWidth: 18, fontStyle: 'bold' },
+          3: { cellWidth: 24 },
+          4: { cellWidth: 48 },
+          5: { cellWidth: 40 },
+          6: { cellWidth: 20, fontStyle: 'bold', halign: 'center' }
+        },
+        didParseCell: function(data) {
+          if (data.section === 'body' && data.column.index === 6) {
+            const rawVal = data.cell.raw;
+            if (rawVal === 'DISETUJUI') {
+              data.cell.styles.textColor = [16, 185, 129];
+            } else if (rawVal === 'DITOLAK') {
+              data.cell.styles.textColor = [239, 68, 68];
+            } else {
+              data.cell.styles.textColor = [234, 179, 8];
+            }
+          }
+        },
+        margin: { left: 14, right: 14 }
+      });
+
+      // Signature Block at Bottom / Final Page
+      // @ts-ignore
+      const finalY = (doc as any).lastAutoTable?.finalY || 160;
+      let sigY = finalY + 8;
+      if (sigY > 230) {
+        doc.addPage();
+        sigY = 20;
+      }
+
+      doc.setFontSize(8);
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(15, 23, 42);
+      doc.text("LEMBAR PENGESAHAN & PENJAMIN MUTU AUDIT", 14, sigY);
+      doc.setDrawColor(226, 232, 240);
+      doc.line(14, sigY + 2, 196, sigY + 2);
+
+      const sigBoxY = sigY + 6;
+
+      // Draw Signatures if present (40mm width x 13mm height)
+      if (cleanerSignature && cleanerSignature.startsWith('data:image')) {
+        try {
+          doc.addImage(cleanerSignature, 'PNG', 16, sigBoxY + 3, 40, 13);
+        } catch (e) {
+          console.warn('Could not render cleaner signature', e);
+        }
+      }
+
+      if (kepalaSignature && kepalaSignature.startsWith('data:image')) {
+        try {
+          doc.addImage(kepalaSignature, 'PNG', 81, sigBoxY + 3, 40, 13);
+        } catch (e) {
+          console.warn('Could not render kepala signature', e);
+        }
+      }
+
+      if (auditorSignature && auditorSignature.startsWith('data:image')) {
+        try {
+          doc.addImage(auditorSignature, 'PNG', 141, sigBoxY + 3, 40, 13);
+        } catch (e) {
+          console.warn('Could not render auditor signature', e);
+        }
+      }
+
+      // 1. Disiapkan (Petugas Staf)
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(6.8);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Disiapkan & Dilaporkan:", 18, sigBoxY);
+      doc.setDrawColor(203, 213, 225);
+      doc.line(18, sigBoxY + 17, 68, sigBoxY + 17);
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(15, 23, 42);
+      doc.text(cleanerName || "Budi Santoso & Tim Kebersihan", 18, sigBoxY + 21);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(100, 116, 139);
+      doc.text(cleanerTitle || "Koordinator Pelaksana Bersih Area", 18, sigBoxY + 25);
+      doc.text(cleanerCompany || "Divisi Fasilitas & Cleanliness", 18, sigBoxY + 29);
+
+      // 2. Disahkan (Kepala Gudang)
+      doc.text("Diverifikasi & Disahkan:", 83, sigBoxY);
+      doc.setDrawColor(203, 213, 225);
+      doc.line(83, sigBoxY + 17, 133, sigBoxY + 17);
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(15, 23, 42);
+      doc.text(kepalaName || currentUser.name, 83, sigBoxY + 21);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(100, 116, 139);
+      doc.text(kepalaTitle || "Kepala Gudang & Fasilitas Terdaftar", 83, sigBoxY + 25);
+      doc.text(kepalaCompany || company, 83, sigBoxY + 29);
+
+      // 3. Auditor Mutu
+      doc.text("Diverifikasi Auditor Mutu:", 143, sigBoxY);
+      doc.setDrawColor(203, 213, 225);
+      doc.line(143, sigBoxY + 17, 193, sigBoxY + 17);
+      doc.setFont("Helvetica", "bold");
+      doc.setTextColor(15, 23, 42);
+      doc.text(auditorName || auditor, 143, sigBoxY + 21);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(100, 116, 139);
+      doc.text(auditorTitle || "Lead Logistics & Quality Auditor", 143, sigBoxY + 25);
+      doc.text(auditorCompany || company, 143, sigBoxY + 29);
+
+      // Footer notes
+      const pageCount = (doc.internal as any).getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(6.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `Dokumen resmi ini di-generate otomatis oleh Sistem GudangClean (${company}) • Hal ${i} dari ${pageCount}`,
+          14,
+          290
+        );
+        doc.text(`Kode Verifikasi: ${auditDocId} • Otentik`, 150, 290);
+      }
+
+      // DIRECT DOWNLOAD: Triggers instant browser download
+      const fileName = `${auditDocId}_Laporan_Audit_Kebersihan.pdf`;
+      doc.save(fileName);
+
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 4500);
+    } catch (err) {
+      console.error("PDF Generation error:", err);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  // 2. EXCEL / SPREADSHEET EXPORT
   const handleExportExcel = () => {
     const data = filteredExportData;
-    const dateStr = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
-    const periodText = exportPeriod === 'ALL' ? 'Semua Periode' : 
-                       exportPeriod === 'TODAY' ? 'Hari Ini' : 
-                       exportPeriod === 'WEEK' ? '7 Hari Terakhir' : '30 Hari Terakhir';
-    const warehouseText = exportWarehouse === 'ALL' ? 'Semua Gudang (A-L)' : `Gudang ${exportWarehouse}`;
-
     let html = `
-      <html xmlns:o="urn:schemas-microsoft-excel:office:office" xmlns:x="urn:schemas-microsoft-excel:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
       <head>
-        <meta charset="utf-8" />
-        <!--[if gte mso 9]>
-        <xml>
-          <x:ExcelWorkbook>
-            <x:ExcelWorksheets>
-              <x:ExcelWorksheet>
-                <x:Name>Log Book GudangClean</x:Name>
-                <x:WorksheetOptions>
-                  <x:DisplayGridlines/>
-                </x:WorksheetOptions>
-              </x:ExcelWorksheet>
-            </x:ExcelWorksheets>
-          </x:ExcelWorkbook>
-        </xml>
-        <![endif]-->
+        <meta charset="utf-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Logbook Kebersihan</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
         <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1e293b; }
-          .title { font-size: 16pt; font-weight: bold; text-align: center; color: #0f172a; }
-          .subtitle { font-size: 11pt; text-align: center; color: #475569; margin-bottom: 20px; }
-          .meta-table { border: none; margin-bottom: 20px; font-size: 10pt; }
-          .meta-label { font-weight: bold; width: 150px; background-color: #f1f5f9; padding: 4px; }
-          .meta-value { padding: 4px; }
-          
-          .data-table { border-collapse: collapse; width: 100%; margin-top: 15px; }
-          .data-table th { background-color: #059669; color: white; font-weight: bold; text-align: center; border: 1px solid #10b981; padding: 8px; font-size: 10pt; }
-          .data-table td { border: 1px solid #cbd5e1; padding: 8px; font-size: 9pt; vertical-align: top; }
-          
-          .status-approved { background-color: #d1fae5; color: #065f46; font-weight: bold; text-align: center; }
-          .status-pending { background-color: #fef3c7; color: #92400e; font-weight: bold; text-align: center; }
-          .status-rejected { background-color: #fee2e2; color: #991b1b; font-weight: bold; text-align: center; }
-          
-          .summary-card { font-size: 10pt; padding: 10px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
-          .footer-section { margin-top: 35px; font-size: 10pt; }
+          table { border-collapse: collapse; width: 100%; font-family: Calibri, sans-serif; font-size: 11pt; }
+          th { background-color: #0f1016; color: #ffffff; font-weight: bold; border: 1px solid #333333; padding: 8px; text-align: left; }
+          td { border: 1px solid #cccccc; padding: 6px; }
+          .header-title { font-size: 16pt; font-weight: bold; color: #10b981; }
+          .sub-title { font-size: 10pt; color: #666666; margin-bottom: 12px; }
         </style>
       </head>
       <body>
-        <div class="title">LOG BOOK PEMELIHARAAN KEBERSIHAN GUDANG</div>
-        <div class="subtitle">Sistem Pemantauan Kebersihan Terpadu - Gudang A sampai L</div>
-        
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">Nomor Dokumen</td>
-            <td class="meta-value">${docNumber}</td>
-            <td style="width: 50px;"></td>
-            <td class="meta-label">Total Gudang</td>
-            <td class="meta-value">${warehouses.length} Gudang (A-L)</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Tanggal Cetak</td>
-            <td class="meta-value">${dateStr}</td>
-            <td></td>
-            <td class="meta-label">Total Laporan</td>
-            <td class="meta-value">${data.length} Transaksi</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Perusahaan</td>
-            <td class="meta-value">${companyName}</td>
-            <td></td>
-            <td class="meta-label">Filter Wilayah</td>
-            <td class="meta-value">${warehouseText}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Auditor Utama</td>
-            <td class="meta-value">${auditorName}</td>
-            <td></td>
-            <td class="meta-label">Filter Waktu</td>
-            <td class="meta-value">${periodText} (${exportStatus === 'ALL' ? 'Semua Status' : exportStatus})</td>
-          </tr>
-        </table>
-
-        <div class="summary-card">
-          <strong>RINGKASAN STATUS GUDANG SAAT INI:</strong><br/>
-          • Bersih: ${warehouses.filter(w => w.status === 'BERSIH').length} Gudang | 
-          • Sedang Proses: ${warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length} Gudang | 
-          • Kotor/Butuh Tindakan: ${warehouses.filter(w => w.status === 'KOTOR').length} Gudang
-        </div>
-
-        <table class="data-table">
+        <div class="header-title">LOGBOOK AUDIT KEBERSIHAN GUDANG A s/d L</div>
+        <div class="sub-title">Dokumen No: ${docNumber} | Diekspor pada: ${new Date().toLocaleString('id-ID')} | Perusahaan: ${companyName}</div>
+        <br/>
+        <table>
           <thead>
             <tr>
-              <th style="width: 30px;">No</th>
-              <th style="width: 130px;">Tanggal & Waktu</th>
-              <th style="width: 80px;">Gudang</th>
-              <th style="width: 150px;">Area Spesifik</th>
-              <th style="width: 150px;">Petugas Kebersihan</th>
-              <th style="width: 250px;">Keterangan Pekerjaan</th>
-              <th style="width: 120px;">Lampiran Sebelum</th>
-              <th style="width: 120px;">Lampiran Sesudah</th>
-              <th style="width: 200px;">Catatan Korektif / Feedback</th>
+              <th>No</th>
+              <th>Waktu Laporan</th>
+              <th>Gudang</th>
+              <th>Petugas Pelaksana</th>
+              <th>Catatan & Temuan Kebersihan</th>
+              <th>Feedback & Catatan Kepala</th>
+              <th>Status Verifikasi</th>
             </tr>
           </thead>
           <tbody>
     `;
 
     if (data.length === 0) {
-      html += `
-        <tr>
-          <td colspan="9" style="text-align: center; color: #64748b; font-style: italic; padding: 20px;">
-            Tidak ada data logbook kebersihan yang sesuai dengan kriteria filter.
-          </td>
-        </tr>
-      `;
+      html += `<tr><td colspan="7" style="text-align: center; color: #999999;">Tidak ada data laporan pada filter ini</td></tr>`;
     } else {
       data.forEach((r, idx) => {
-        const whObj = warehouses.find(w => w.id === r.warehouse);
-        const areaName = whObj ? whObj.area : 'Area Logistik';
-        const dateFormatted = new Date(r.timestamp).toLocaleString('id-ID', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-
         html += `
           <tr>
             <td style="text-align: center;">${idx + 1}</td>
-            <td>${dateFormatted} WIB</td>
-            <td style="text-align: center; font-weight: bold;">Gudang ${r.warehouse}</td>
-            <td>${areaName}</td>
-            <td>${r.cleanerName}<br/><span style="color: #64748b; font-size: 8pt;">${r.cleanerEmail}</span></td>
-            <td>${r.description}</td>
-            <td style="text-align: center; vertical-align: middle;">
-              <img src="${r.photoBefore}" style="width: 100px; height: 70px; object-fit: cover;" />
-            </td>
-            <td style="text-align: center; vertical-align: middle;">
-              <img src="${r.photoAfter}" style="width: 100px; height: 70px; object-fit: cover;" />
-            </td>
+            <td>${formatIndonesianDateTime(r.timestamp)}</td>
+            <td style="font-weight: bold; text-align: center;">Gudang ${r.warehouse}</td>
+            <td>${r.cleanerName || '-'}</td>
+            <td>${r.description || '-'}</td>
             <td>${r.feedback || '-'}</td>
+            <td style="text-align: center; font-weight: bold;">${r.status}</td>
           </tr>
         `;
       });
@@ -253,35 +523,10 @@ export default function ExportReportsModal({
     html += `
           </tbody>
         </table>
-
-        ${includeSignatures ? `
-        <table class="footer-section" style="width: 100%; border: none; margin-top: 50px;">
-          <tr style="border: none;">
-            <td style="width: 33%; border: none; text-align: center;">
-              Disiapkan Oleh,<br/>
-              <strong>Tim Petugas Kebersihan</strong><br/><br/><br/><br/>
-              ( .................................... )
-            </td>
-            <td style="width: 34%; border: none; text-align: center;">
-              Diverifikasi Oleh,<br/>
-              <strong>Kepala Gudang</strong><br/><br/><br/><br/>
-              <strong>${currentUser.name}</strong><br/>
-              NIP. GC-309102-K
-            </td>
-            <td style="width: 33%; border: none; text-align: center;">
-              Disetujui Untuk Audit,<br/>
-              <strong>Auditor Eksternal</strong><br/><br/><br/><br/>
-              <strong>${auditorName}</strong><br/>
-              ${companyName}
-            </td>
-          </tr>
-        </table>
-        ` : ''}
       </body>
       </html>
     `;
 
-    // Download flow
     const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -292,996 +537,905 @@ export default function ExportReportsModal({
     document.body.removeChild(link);
   };
 
-  // 2. GENERATE WORD (Styled HTML-to-Word .doc document format)
-  const handleExportWord = () => {
-    const data = filteredExportData;
-    const dateStr = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
-    const periodText = exportPeriod === 'ALL' ? 'Semua Periode' : 
-                       exportPeriod === 'TODAY' ? 'Hari Ini' : 
-                       exportPeriod === 'WEEK' ? '7 Hari Terakhir' : '30 Hari Terakhir';
-    const warehouseText = exportWarehouse === 'ALL' ? 'Semua Gudang (A-L)' : `Gudang ${exportWarehouse}`;
-
-    let html = `
-      <html xmlns:o="urn:schemas-microsoft-word:office:office" xmlns:w="urn:schemas-microsoft-word:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          @page {
-            size: A4 portrait;
-            margin: 1.0in 1.0in 1.0in 1.0in;
-          }
-          body { font-family: 'Georgia', 'Times New Roman', serif; line-height: 1.6; color: #1e293b; }
-          
-          .cop-surat { text-align: center; border-bottom: 3px double #10b981; padding-bottom: 12px; margin-bottom: 25px; }
-          .cop-company { font-family: 'Arial', sans-serif; font-size: 16pt; font-weight: bold; color: #049669; letter-spacing: 1px; }
-          .cop-sub { font-family: 'Arial', sans-serif; font-size: 9pt; color: #475569; margin-top: 2px; }
-          
-          .doc-title { text-align: center; font-size: 15pt; font-weight: bold; font-family: 'Arial', sans-serif; margin-bottom: 5px; color: #0f172a; text-transform: uppercase; }
-          .doc-subtitle { text-align: center; font-size: 10pt; font-style: italic; color: #475569; margin-bottom: 25px; }
-          
-          .meta-box { border: 1px solid #cbd5e1; width: 100%; margin-bottom: 20px; font-size: 9.5pt; font-family: 'Arial', sans-serif; }
-          .meta-box td { padding: 6px; border: 1px solid #e2e8f0; }
-          .meta-hdr { background-color: #f8fafc; font-weight: bold; width: 140px; }
-          
-          h2 { font-size: 12pt; font-family: 'Arial', sans-serif; color: #0f172a; border-left: 4px solid #10b981; padding-left: 8px; margin-top: 20px; margin-bottom: 10px; }
-          
-          .item-table { border-collapse: collapse; width: 100%; margin-top: 10px; margin-bottom: 25px; }
-          .item-table th { background-color: #f1f5f9; border: 1px solid #94a3b8; padding: 7px; font-size: 9pt; font-family: 'Arial', sans-serif; font-weight: bold; text-align: left; }
-          .item-table td { border: 1px solid #cbd5e1; padding: 7px; font-size: 9pt; vertical-align: top; }
-          
-          .item-detail-block { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 20px; background-color: #fcfcfc; }
-          .img-placeholder { border: 1px solid #e2e8f0; background-color: #f8fafc; text-align: center; padding: 8px; font-size: 8pt; color: #64748b; font-family: 'Arial', sans-serif; }
-          
-          .status-tag { font-family: 'Arial', sans-serif; font-size: 8pt; font-weight: bold; padding: 2px 6px; border-radius: 4px; display: inline-block; text-transform: uppercase; }
-          .status-approved { background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-          .status-pending { background-color: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-          .status-rejected { background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-          
-          .signature-table { width: 100%; margin-top: 40px; font-size: 9.5pt; font-family: 'Arial', sans-serif; }
-          .signature-table td { text-align: center; padding: 10px; width: 33%; vertical-align: top; }
-        </style>
-      </head>
-      <body>
-        <!-- Kop Surat -->
-        <div class="cop-surat">
-          <div class="cop-company">GUDANGCLEAN MANAGEMENT SYSTEM</div>
-          <div class="cop-sub">Layanan Pemeliharaan Kebersihan & Standardisasi Mutu Gudang Logistik Terpadu</div>
-          <div class="cop-sub" style="font-style: italic;">Situs Operasional: Gudang A sampai Gudang L | Telp: (021) 8092-1029 | Email: audit@gudangclean.com</div>
-        </div>
-
-        <div class="doc-title">Berita Acara &amp; Logbook Kebersihan Gudang</div>
-        <div class="doc-subtitle">Sesuai Dokumen Penjaminan Mutu GudangClean</div>
-
-        <table class="meta-box" cellspacing="0">
-          <tr>
-            <td class="meta-hdr">No. Dokumen Audit</td>
-            <td>${docNumber}</td>
-            <td class="meta-hdr">Tanggal Penerbitan</td>
-            <td>${dateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-hdr">Instansi / Perusahaan</td>
-            <td>${companyName}</td>
-            <td class="meta-hdr">Kepala Gudang</td>
-            <td>${currentUser.name}</td>
-          </tr>
-          <tr>
-            <td class="meta-hdr">Auditor Eksternal</td>
-            <td>${auditorName}</td>
-            <td class="meta-hdr">Rentang Filter</td>
-            <td>${warehouseText} (${periodText})</td>
-          </tr>
-        </table>
-
-        <h2>I. Ringkasan Kelaikan Kebersihan Area</h2>
-        <p style="font-size: 10pt; margin-bottom: 15px;">
-          Berdasarkan hasil log book pemeliharaan harian yang diverifikasi oleh Kepala Gudang, persentase kebersihan dari total 12 gudang (A s/d L) berada pada level 
-          <strong>${Math.round((warehouses.filter(w => w.status === 'BERSIH').length / warehouses.length) * 100)}% Lolos Standar Bersih</strong>. 
-          Rincian status fisik masing-masing area adalah: 
-          <strong>${warehouses.filter(w => w.status === 'BERSIH').length} Gudang (Bersih)</strong>, 
-          <strong>${warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length} Gudang (Pengerjaan)</strong>, dan 
-          <strong>${warehouses.filter(w => w.status === 'KOTOR').length} Gudang (Kotor)</strong>.
-        </p>
-
-        <h2>II. Riwayat Log Book Harian</h2>
-        <table class="item-table">
-          <thead>
-            <tr>
-              <th style="width: 5%;">No</th>
-              <th style="width: 15%;">Tanggal/Waktu</th>
-              <th style="width: 10%;">Gudang</th>
-              <th style="width: 20%;">Petugas Pelaksana</th>
-              <th style="width: 20%;">Deskripsi Tugas</th>
-              <th style="width: 15%; text-align: center;">Lampiran Sebelum</th>
-              <th style="width: 15%; text-align: center;">Lampiran Sesudah</th>
-            </tr>
-          </thead>
-          <tbody>
-    `;
-
-    if (data.length === 0) {
-      html += `
-        <tr>
-          <td colspan="7" style="text-align: center; color: #64748b; font-style: italic; padding: 20px;">
-            Tidak ditemukan riwayat pengerjaan kebersihan dalam periode ini.
-          </td>
-        </tr>
-      `;
-    } else {
-      data.forEach((r, idx) => {
-        const dateFormatted = new Date(r.timestamp).toLocaleString('id-ID', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-
-        html += `
-          <tr>
-            <td style="text-align: center; vertical-align: middle;">${idx + 1}</td>
-            <td style="vertical-align: middle;">${dateFormatted} WIB</td>
-            <td style="font-weight: bold; text-align: center; vertical-align: middle;">Gudang ${r.warehouse}</td>
-            <td style="vertical-align: middle;"><strong>${r.cleanerName}</strong><br/><span style="color:#555;font-size:8pt;">${r.cleanerEmail}</span></td>
-            <td style="vertical-align: middle;">${r.description}</td>
-            <td style="text-align: center; vertical-align: middle; padding: 4px;">
-              <img src="${r.photoBefore}" style="width: 100px; height: 70px; object-fit: cover;" />
-            </td>
-            <td style="text-align: center; vertical-align: middle; padding: 4px;">
-              <img src="${r.photoAfter}" style="width: 100px; height: 70px; object-fit: cover;" />
-            </td>
-          </tr>
-        `;
-      });
-    }
-
-    html += `
-          </tbody>
-        </table>
-    `;
-
-    // Include detailed reports with images if requested
-    if (includePhotos && data.length > 0) {
-      html += `
-        <div style="page-break-before: always; margin-top: 30px;">
-          <h2 style="font-size: 14pt; font-family: 'Arial', sans-serif; font-weight: bold; color: #0f172a; border-bottom: 2px solid #10b981; padding-bottom: 8px; text-transform: uppercase;">
-            LAMPIRAN RINCIAN DOKUMENTASI LAPORAN
-          </h2>
-          <p style="font-size: 9.5pt; font-family: 'Arial', sans-serif; color: #475569; margin-top: 5px; margin-bottom: 25px;">
-            Berikut adalah rekaman audit kebersihan harian yang diisi oleh petugas dan diverifikasi oleh Kepala Gudang.
-          </p>
-      `;
-      
-      data.forEach((r, idx) => {
-        let statusBadge = r.status === 'APPROVED' 
-          ? '<span style="background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; font-weight: bold; font-size: 8pt; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">DISETUJUI / BERSIH</span>' 
-          : r.status === 'REJECTED'
-          ? '<span style="background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; font-weight: bold; font-size: 8pt; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">DITOLAK / REVISI</span>'
-          : '<span style="background-color: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-weight: bold; font-size: 8pt; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">MENUNGGU VERIFIKASI</span>';
-
-        html += `
-          <div style="margin-bottom: 30px; page-break-inside: avoid; border: 1px solid #cbd5e1; padding: 15px; border-radius: 8px; background-color: #fcfcfc;">
-            <!-- Card Header -->
-            <table style="width: 100%; border: none; margin-bottom: 15px; background-color: #f1f5f9; padding: 8px 12px; border-radius: 4px;">
-              <tr style="border: none;">
-                <td style="border: none; font-weight: bold; font-size: 11pt; color: #0f172a; font-family: 'Arial', sans-serif;">
-                  ${idx + 1}. Laporan Kebersihan Gudang ${r.warehouse}
-                </td>
-                <td style="border: none; text-align: right; font-family: 'Courier New', monospace; font-size: 8.5pt; color: #64748b;">
-                  ID: ${r.id}
-                </td>
-              </tr>
-            </table>
-
-            <!-- Metadata Table -->
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 9.5pt; font-family: 'Arial', sans-serif;">
-              <tr style="border: none;">
-                <td style="width: 150px; font-weight: bold; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Nama Petugas:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top;">
-                  ${r.cleanerName} <span style="color: #64748b; font-weight: normal;">(${r.cleanerEmail})</span>
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: bold; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Tanggal Kirim:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top;">
-                  ${formatIndonesianDateTime(r.timestamp)}
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: bold; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Status Laporan:</td>
-                <td style="padding: 4px 0; border: none; vertical-align: top;">
-                  ${statusBadge}
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: bold; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Keterangan:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top; font-style: italic;">
-                  ${r.description || '-'}
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: bold; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Catatan Kepala:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top;">
-                  ${r.feedback || '-'}
-                </td>
-              </tr>
-            </table>
-
-            <!-- Images Side-by-Side -->
-            <table style="width: 100%; border: none;">
-              <tr style="border: none;">
-                <td style="width: 50%; border: none; padding-right: 8px; text-align: center;">
-                  <div style="font-size: 9pt; font-weight: bold; color: #ef4444; margin-bottom: 5px; font-family: 'Arial', sans-serif;">SEBELUM (KOTOR)</div>
-                  <div style="border: 1px solid #fca5a5; border-radius: 6px; padding: 5px; background-color: #ffffff;">
-                    <img src="${r.photoBefore}" style="width: 100%; max-height: 160px; object-fit: cover;" />
-                  </div>
-                </td>
-                <td style="width: 50%; border: none; padding-left: 8px; text-align: center;">
-                  <div style="font-size: 9pt; font-weight: bold; color: #10b981; margin-bottom: 5px; font-family: 'Arial', sans-serif;">SESUDAH (BERSIH)</div>
-                  <div style="border: 1px solid #6ee7b7; border-radius: 6px; padding: 5px; background-color: #ffffff;">
-                    <img src="${r.photoAfter}" style="width: 100%; max-height: 160px; object-fit: cover;" />
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </div>
-        `;
-      });
-      html += `</div>`;
-    }
-
-    // Signatures
-    if (includeSignatures) {
-      html += `
-        <table class="signature-table" cellspacing="0" style="page-break-inside: avoid;">
-          <tr>
-            <td>
-              Dibuat Oleh,<br/>
-              <strong>Tim Pelaksana Lapangan</strong><br/><br/><br/><br/>
-              ( ........................................... )<br/>
-              Staf Kebersihan Gudang
-            </td>
-            <td>
-              Disetujui Oleh Kepala Gudang,<br/>
-              <strong>GudangClean Management</strong><br/><br/><br/><br/>
-              <strong>${currentUser.name}</strong><br/>
-              NIP. GC-309102-K
-            </td>
-            <td>
-              Diverifikasi Untuk Laporan Audit,<br/>
-              <strong>Auditor Independen</strong><br/><br/><br/><br/>
-              <strong>${auditorName}</strong><br/>
-              ${companyName}
-            </td>
-          </tr>
-        </table>
-      `;
-    }
-
-    html += `
-      </body>
-      </html>
-    `;
-
-    // Download file
-    const blob = new Blob([html], { type: 'application/msword;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `${docNumber}_Log_Book_Audit.doc`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // 3. GENERATE PDF (Beautiful Printable Web Page Document layout)
-  const handlePrintPDF = () => {
-    const data = filteredExportData;
-    const dateStr = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      alert('Gagal membuka jendela cetak. Pastikan pop-up blocker browser Anda dinonaktifkan.');
-      return;
-    }
-
-    const periodText = exportPeriod === 'ALL' ? 'Semua Periode' : 
-                       exportPeriod === 'TODAY' ? 'Hari Ini' : 
-                       exportPeriod === 'WEEK' ? '7 Hari Terakhir' : '30 Hari Terakhir';
-    const warehouseText = exportWarehouse === 'ALL' ? 'Semua Gudang (A-L)' : `Gudang ${exportWarehouse}`;
-
-    const cleanCount = warehouses.filter(w => w.status === 'BERSIH').length;
-    const inProgressCount = warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length;
-    const dirtyCount = warehouses.filter(w => w.status === 'KOTOR').length;
-    const cleanPercentage = Math.round((cleanCount / warehouses.length) * 100);
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>LOG BOOK GUDANGCLEAN - AUDIT REPORT</title>
-        <meta charset="utf-8" />
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-          
-          @page {
-            size: A4 portrait;
-            margin: 15mm 15mm 20mm 15mm;
-          }
-          
-          body {
-            font-family: 'Inter', sans-serif;
-            color: #0f172a;
-            line-height: 1.5;
-            background-color: #ffffff;
-            margin: 0;
-            padding: 0;
-            font-size: 10pt;
-          }
-
-          /* Header / Kop */
-          .cop-container {
-            display: flex;
-            align-items: center;
-            border-bottom: 3px double #10b981;
-            padding-bottom: 12px;
-            margin-bottom: 25px;
-          }
-          
-          .logo-box {
-            width: 48px;
-            height: 48px;
-            background-color: #10b981;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 18pt;
-            font-weight: 800;
-            margin-right: 15px;
-          }
-          
-          .cop-text {
-            flex-grow: 1;
-          }
-          
-          .company-name {
-            font-size: 16pt;
-            font-weight: 800;
-            color: #049669;
-            letter-spacing: -0.5px;
-          }
-          
-          .company-tagline {
-            font-size: 8pt;
-            color: #475569;
-            font-weight: 500;
-          }
-
-          .doc-number-badge {
-            font-size: 8.5pt;
-            font-weight: 700;
-            color: #1e293b;
-            background-color: #f1f5f9;
-            padding: 4px 10px;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            text-align: right;
-          }
-
-          /* Main Document Title */
-          .doc-title-section {
-            text-align: center;
-            margin-bottom: 25px;
-          }
-          
-          .doc-title {
-            font-size: 15pt;
-            font-weight: 800;
-            color: #0f172a;
-            text-transform: uppercase;
-            letter-spacing: -0.5px;
-          }
-          
-          .doc-subtitle {
-            font-size: 9pt;
-            color: #64748b;
-            margin-top: 4px;
-            font-weight: 500;
-          }
-
-          /* Metadata Block */
-          .meta-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-bottom: 25px;
-          }
-          
-          .meta-card {
-            border: 1px solid #e2e8f0;
-            background-color: #f8fafc;
-            border-radius: 10px;
-            padding: 12px 15px;
-          }
-          
-          .meta-title {
-            font-size: 8pt;
-            font-weight: 700;
-            text-transform: uppercase;
-            color: #64748b;
-            letter-spacing: 0.5px;
-            margin-bottom: 6px;
-            border-bottom: 1px solid #e2e8f0;
-            padding-bottom: 4px;
-          }
-          
-          .meta-item {
-            display: flex;
-            justify-content: space-between;
-            font-size: 8.5pt;
-            padding: 3px 0;
-          }
-          
-          .meta-label {
-            color: #64748b;
-            font-weight: 500;
-          }
-          
-          .meta-value {
-            color: #1e293b;
-            font-weight: 600;
-          }
-
-          /* Stat Metrics Row */
-          .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 12px;
-            margin-bottom: 25px;
-          }
-          
-          .metric-card {
-            border: 1px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 10px 12px;
-            text-align: center;
-          }
-          
-          .metric-val {
-            font-size: 14pt;
-            font-weight: 800;
-          }
-          
-          .metric-card.success { border-color: #a7f3d0; background-color: #f0fdf4; color: #15803d; }
-          .metric-card.warning { border-color: #fde68a; background-color: #fffbeb; color: #b45309; }
-          .metric-card.danger { border-color: #fecaca; background-color: #fef2f2; color: #b91c1c; }
-          .metric-card.neutral { border-color: #cbd5e1; background-color: #f8fafc; color: #475569; }
-          
-          .metric-lbl {
-            font-size: 7.5pt;
-            font-weight: 600;
-            text-transform: uppercase;
-            color: #64748b;
-            margin-top: 3px;
-          }
-
-          h2 {
-            font-size: 11pt;
-            font-weight: 700;
-            color: #0f172a;
-            border-left: 4px solid #10b981;
-            padding-left: 8px;
-            margin-top: 25px;
-            margin-bottom: 12px;
-            text-transform: uppercase;
-            letter-spacing: -0.2px;
-          }
-
-          /* Main Table */
-          .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 8.5pt;
-            margin-bottom: 30px;
-          }
-          
-          .data-table th {
-            background-color: #f1f5f9;
-            color: #475569;
-            font-weight: 700;
-            text-transform: uppercase;
-            font-size: 7.5pt;
-            border: 1px solid #cbd5e1;
-            padding: 8px 10px;
-            text-align: left;
-            letter-spacing: 0.3px;
-          }
-          
-          .data-table td {
-            border: 1px solid #e2e8f0;
-            padding: 8px 10px;
-            vertical-align: top;
-          }
-          
-          .data-table tr:nth-child(even) {
-            background-color: #f8fafc;
-          }
-          
-          /* Badges */
-          .badge {
-            font-size: 7pt;
-            font-weight: 700;
-            text-transform: uppercase;
-            padding: 2px 6px;
-            border-radius: 4px;
-            display: inline-block;
-          }
-          
-          .badge-approved { background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-          .badge-pending { background-color: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-          .badge-rejected { background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-
-          /* Photo Proof Elements */
-          .photo-section {
-            page-break-before: auto;
-          }
-          
-          .photo-item-card {
-            border: 1px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 12px;
-            margin-bottom: 15px;
-            background-color: #ffffff;
-            page-break-inside: avoid;
-          }
-          
-          .photo-item-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 8.5pt;
-            font-weight: 600;
-            color: #334155;
-            margin-bottom: 8px;
-            border-bottom: 1px solid #f1f5f9;
-            padding-bottom: 5px;
-          }
-          
-          .photo-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-          }
-          
-          .photo-container {
-            border: 1.5px solid #cbd5e1;
-            border-radius: 8px;
-            overflow: hidden;
-            text-align: center;
-            background-color: #f8fafc;
-          }
-          
-          .photo-container.before { border-color: #fca5a5; }
-          .photo-container.after { border-color: #6ee7b7; }
-          
-          .photo-img {
-            width: 100%;
-            height: 125px;
-            object-fit: cover;
-            display: block;
-          }
-          
-          .photo-lbl {
-            font-size: 7.5pt;
-            font-weight: 700;
-            padding: 4px;
-            text-transform: uppercase;
-          }
-          
-          .photo-container.before .photo-lbl { background-color: #fef2f2; color: #b91c1c; }
-          .photo-container.after .photo-lbl { background-color: #f0fdf4; color: #15803d; }
-
-          /* Signatures */
-          .signature-section {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 40px;
-            page-break-inside: avoid;
-          }
-          
-          .signature-box {
-            text-align: center;
-            width: 30%;
-            font-size: 8.5pt;
-          }
-          
-          .signature-title {
-            color: #64748b;
-            font-weight: 500;
-            margin-bottom: 45px;
-          }
-          
-          .signature-name {
-            font-weight: 700;
-            color: #1e293b;
-            text-decoration: underline;
-          }
-          
-          .signature-sub {
-            font-size: 7.5pt;
-            color: #64748b;
-            margin-top: 2px;
-          }
-
-          /* Print helpers */
-          @media print {
-            .no-print { display: none; }
-            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          }
-        </style>
-      </head>
-      <body>
-        <!-- Header / Kop -->
-        <div class="cop-container">
-          <div class="logo-box">GC</div>
-          <div class="cop-text">
-            <div class="company-name">GUDANGCLEAN SYSTEM</div>
-            <div class="company-tagline">Integrated Logistical Maintenance & Hygiene Quality Standardisation</div>
-          </div>
-          <div class="doc-number-badge">
-            <div style="font-size: 7.5pt; color: #64748b; font-weight: 500;">No. Dokumen Audit</div>
-            <div>${docNumber}</div>
-          </div>
-        </div>
-
-        <!-- Title -->
-        <div class="doc-title-section">
-          <div class="doc-title">Log Book Pemeliharaan Kebersihan Gudang</div>
-          <div class="doc-subtitle">Laporan Verifikasi dan Kelaikan Kebersihan Area Gudang A s/d Gudang L</div>
-        </div>
-
-        <!-- Metrics Row -->
-        <div class="metrics-grid">
-          <div class="metric-card success">
-            <div class="metric-val">${cleanPercentage}%</div>
-            <div class="metric-lbl">Lolos Standar</div>
-          </div>
-          <div class="metric-card neutral">
-            <div class="metric-val">${cleanCount}</div>
-            <div class="metric-lbl">Gudang Bersih</div>
-          </div>
-          <div class="metric-card warning">
-            <div class="metric-val">${inProgressCount}</div>
-            <div class="metric-lbl">Proses Rapi</div>
-          </div>
-          <div class="metric-card danger">
-            <div class="metric-val">${dirtyCount}</div>
-            <div class="metric-lbl">Butuh Tindakan</div>
-          </div>
-        </div>
-
-        <h2>I. Riwayat Log Book Harian</h2>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 4%; text-align: center;">No</th>
-              <th style="width: 14%;">Tanggal & Waktu</th>
-              <th style="width: 8%; text-align: center;">Gudang</th>
-              <th style="width: 16%;">Pelaksana Kerja</th>
-              <th style="width: 22%;">Keterangan & Spesifikasi Tugas</th>
-              <th style="width: 18%; text-align: center;">Lampiran Sebelum</th>
-              <th style="width: 18%; text-align: center;">Lampiran Sesudah</th>
-            </tr>
-          </thead>
-          <tbody>
-      `);
-
-    if (data.length === 0) {
-      printWindow.document.write(`
-        <tr>
-          <td colspan="7" style="text-align: center; color: #64748b; font-style: italic; padding: 25px;">
-            Tidak ditemukan riwayat logbook kebersihan yang sesuai filter untuk periode cetak.
-          </td>
-        </tr>
-      `);
-    } else {
-      data.forEach((r, idx) => {
-        const whObj = warehouses.find(w => w.id === r.warehouse);
-        const areaName = whObj ? whObj.area : 'Penyimpanan Utama';
-        const dateFormatted = new Date(r.timestamp).toLocaleString('id-ID', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-
-        printWindow.document.write(`
-          <tr>
-            <td style="text-align: center; vertical-align: middle;">${idx + 1}</td>
-            <td style="vertical-align: middle;">${dateFormatted} WIB</td>
-            <td style="font-weight: 700; text-align: center; vertical-align: middle;">Gudang ${r.warehouse}</td>
-            <td style="vertical-align: middle;">
-              <div style="font-weight: 600; color: #1e293b;">${r.cleanerName}</div>
-              <div style="font-size: 7.5pt; color: #64748b;">${r.cleanerEmail}</div>
-            </td>
-            <td style="vertical-align: middle;">
-              <div style="font-weight: 500; color: #334155;">${r.description}</div>
-              <div style="font-size: 7.5pt; color: #64748b; font-style: italic; margin-top: 3px;">Area: ${areaName}</div>
-              ${r.feedback ? `<div style="font-size: 7.5pt; color: #059669; margin-top: 4px; padding-left: 6px; border-left: 2px solid #10b981;">Catatan: "${r.feedback}"</div>` : ''}
-            </td>
-            <td style="text-align: center; vertical-align: middle; padding: 4px;">
-              <img src="${r.photoBefore}" style="width: 100%; max-height: 70px; object-fit: cover; border-radius: 4px; border: 1px solid #fca5a5; display: block; margin: 0 auto;" />
-            </td>
-            <td style="text-align: center; vertical-align: middle; padding: 4px;">
-              <img src="${r.photoAfter}" style="width: 100%; max-height: 70px; object-fit: cover; border-radius: 4px; border: 1px solid #6ee7b7; display: block; margin: 0 auto;" />
-            </td>
-          </tr>
-        `);
-      });
-    }
-
-    printWindow.document.write(`
-          </tbody>
-        </table>
-    `);
-
-    // Include detailed photos section if active
-    if (includePhotos && data.length > 0) {
-      printWindow.document.write(`
-        <div class="photo-section" style="page-break-before: always; margin-top: 30px;">
-          <h2 style="font-size: 14pt; font-weight: 800; color: #0f172a; border-left: none; padding-left: 0; margin-bottom: 5px; text-transform: uppercase; letter-spacing: -0.3px; border-bottom: 2px solid #10b981; padding-bottom: 8px;">
-            LAMPIRAN RINCIAN DOKUMENTASI LAPORAN
-          </h2>
-          <p style="font-size: 9pt; color: #475569; margin-top: 8px; margin-bottom: 25px;">
-            Berikut adalah rekaman audit kebersihan harian yang diisi oleh petugas dan diverifikasi oleh Kepala Gudang.
-          </p>
-      `);
-
-      data.forEach((r, idx) => {
-        printWindow.document.write(`
-          <div class="photo-item-card" style="margin-bottom: 30px; page-break-inside: avoid;">
-            <!-- Card Header gray background -->
-            <div style="background-color: #f8fafc; border-radius: 6px; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border: 1px solid #f1f5f9;">
-              <span style="font-size: 11pt; font-weight: 800; color: #0f172a;">${idx + 1}. Laporan Kebersihan Gudang ${r.warehouse}</span>
-              <span style="font-size: 8.5pt; font-family: monospace; color: #94a3b8; font-weight: 600;">ID: ${r.id}</span>
-            </div>
-
-            <!-- Metadata Grid -->
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 9.5pt;">
-              <tr style="border: none;">
-                <td style="width: 150px; font-weight: 700; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Nama Petugas:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top;">
-                  ${r.cleanerName} <span style="color: #64748b; font-weight: normal;">(${r.cleanerEmail})</span>
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: 700; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Tanggal Kirim:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top;">
-                  ${formatIndonesianDateTime(r.timestamp)}
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: 700; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Status Laporan:</td>
-                <td style="padding: 4px 0; border: none; vertical-align: top;">
-                  ${r.status === 'APPROVED' 
-                    ? '<span style="background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; font-weight: 700; font-size: 8pt; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">DISETUJUI / BERSIH</span>' 
-                    : r.status === 'REJECTED'
-                    ? '<span style="background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; font-weight: 700; font-size: 8pt; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">DITOLAK / REVISI</span>'
-                    : '<span style="background-color: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-weight: 700; font-size: 8pt; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">MENUNGGU VERIFIKASI</span>'
-                  }
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: 700; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Keterangan:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top; font-style: italic;">
-                  ${r.description || '-'}
-                </td>
-              </tr>
-              <tr style="border: none;">
-                <td style="font-weight: 700; color: #475569; padding: 4px 0; border: none; vertical-align: top;">Catatan Kepala:</td>
-                <td style="color: #1e293b; padding: 4px 0; border: none; vertical-align: top;">
-                  ${r.feedback || '-'}
-                </td>
-              </tr>
-            </table>
-
-            <!-- Side-by-Side Images -->
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 10px;">
-              <!-- Sebelum (Kotor) -->
-              <div style="text-align: center;">
-                <div style="font-size: 9pt; font-weight: 800; color: #ef4444; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">SEBELUM (KOTOR)</div>
-                <div style="border: 1px solid #fca5a5; border-radius: 6px; overflow: hidden; background-color: #f8fafc; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                  <img src="${r.photoBefore}" style="width: 100%; height: 180px; object-fit: cover; display: block;" />
-                </div>
-              </div>
-              
-              <!-- Sesudah (Bersih) -->
-              <div style="text-align: center;">
-                <div style="font-size: 9pt; font-weight: 800; color: #10b981; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">SESUDAH (BERSIH)</div>
-                <div style="border: 1px solid #6ee7b7; border-radius: 6px; overflow: hidden; background-color: #f8fafc; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                  <img src="${r.photoAfter}" style="width: 100%; height: 180px; object-fit: cover; display: block;" />
-                </div>
-              </div>
-            </div>
-          </div>
-        `);
-      });
-
-      printWindow.document.write(`</div>`);
-    }
-
-    // Signatures
-    if (includeSignatures) {
-      printWindow.document.write(`
-        <div class="signature-section">
-          <div class="signature-box">
-            <div class="signature-title">Disiapkan &amp; Dilaporkan,</div>
-            <div style="height: 40px;"></div>
-            <div class="signature-name">Tim Pelaksana Lapangan</div>
-            <div class="signature-sub">GudangClean Cleaning Crew</div>
-          </div>
-          <div class="signature-box">
-            <div class="signature-title">Diverifikasi &amp; Disahkan,</div>
-            <div style="height: 40px;"></div>
-            <div class="signature-name">${currentUser.name}</div>
-            <div class="signature-sub">Kepala Gudang Terdaftar</div>
-          </div>
-          <div class="signature-box">
-            <div class="signature-title">Disetujui Penilaian Mutu,</div>
-            <div style="height: 40px;"></div>
-            <div class="signature-name">${auditorName}</div>
-            <div class="signature-sub">${companyName}</div>
-          </div>
-        </div>
-      `);
-    }
-
-    printWindow.document.write(`
-        <div style="text-align: center; color: #94a3b8; font-size: 7.5pt; margin-top: 50px; font-family: sans-serif; border-top: 1px solid #e2e8f0; padding-top: 15px;">
-          Dokumen ini diterbitkan secara elektronik oleh Sistem Informasi Bersih Area (GudangClean SIBA) dan sah digunakan untuk keperluan audit mutu internal & eksternal.
-        </div>
-      </body>
-      </html>
-    `);
-
-    printWindow.document.close();
-    
-    // Auto trigger print after images load
-    printWindow.focus();
-    setTimeout(() => {
-      printWindow.print();
-      // Keep it open for a bit so they can save or look, then they can close manually
-    }, 1200);
-  };
-
   return (
-    <div className="fixed inset-0 z-110 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-110 flex items-center justify-center p-2 sm:p-4">
       {/* Backdrop */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         onClick={onClose}
-        className="absolute inset-0 bg-zinc-950/80 backdrop-blur-md"
+        className="absolute inset-0 bg-zinc-950/85 backdrop-blur-md"
       />
 
-      {/* Modal Container */}
+      {/* Modal Container (Expansive & High Performance) */}
       <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 15 }}
+        initial={{ opacity: 0, scale: 0.96, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className="relative w-full max-w-3xl bg-[#0f1016] border border-zinc-800/80 rounded-2xl shadow-2xl z-10 flex flex-col max-h-[92vh] overflow-hidden font-sans"
+        exit={{ opacity: 0, scale: 0.96, y: 15 }}
+        className="relative w-full max-w-5xl bg-[#0f1016] border border-zinc-800/90 rounded-2xl shadow-2xl z-10 flex flex-col max-h-[94vh] overflow-hidden font-sans"
         id="export-reports-modal-body"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-zinc-900 bg-zinc-950/40">
-          <div className="flex items-center space-x-3 text-emerald-400">
-            <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
-              <FileText className="w-5 h-5 text-emerald-400" />
+        {/* Header with Navigation Tabs */}
+        <div className="border-b border-zinc-900 bg-zinc-950/60 p-4 sm:p-5 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3 text-emerald-400">
+              <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20 shadow-inner">
+                <FileText className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-white text-base sm:text-lg font-display tracking-tight flex items-center space-x-2">
+                  <span>Dasbor Laporan & Ekspor Audit PDF</span>
+                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-bold hidden sm:inline-block">
+                    LIVE DASHBOARD
+                  </span>
+                </h3>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Analisis metrik kepatuhan kebersihan, tinjau lembar kertas audit resmi, dan verifikasi tanda tangan sebelum diunduh.
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="font-extrabold text-white text-base font-display tracking-tight flex items-center space-x-2">
-                <span>Unduh Laporan PDF saja</span>
-                <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono">
-                  LAPORAN AUDIT
-                </span>
-              </h3>
-              <p className="text-xs text-zinc-500 mt-0.5">
-                Konfigurasi ekspor logbook pemeliharaan gudang terformat rapi dalam format PDF untuk keperluan audit operasional.
-              </p>
-            </div>
+            
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer outline-none border border-transparent hover:border-zinc-800"
+              title="Tutup Modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors cursor-pointer outline-none"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          {/* Navigation Bar Tabs */}
+          <div className="flex items-center space-x-1.5 overflow-x-auto pb-0.5 scrollbar-none pt-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('DASHBOARD')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
+                activeTab === 'DASHBOARD'
+                  ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                  : 'bg-zinc-900/60 hover:bg-zinc-850 text-zinc-300 hover:text-white border border-zinc-850'
+              }`}
+            >
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              <span>1. Dasbor Ringkasan & Metrik</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('PREVIEW_SHEET')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
+                activeTab === 'PREVIEW_SHEET'
+                  ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                  : 'bg-zinc-900/60 hover:bg-zinc-850 text-zinc-300 hover:text-white border border-zinc-850'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>2. Pratinjau Lembar Audit Cetak</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('SIGNERS')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
+                activeTab === 'SIGNERS'
+                  ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                  : 'bg-zinc-900/60 hover:bg-zinc-850 text-zinc-300 hover:text-white border border-zinc-850'
+              }`}
+            >
+              <PenTool className="w-3.5 h-3.5" />
+              <span>3. Pengesahan & TTD Digital</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('FILTER')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
+                activeTab === 'FILTER'
+                  ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                  : 'bg-zinc-900/60 hover:bg-zinc-850 text-zinc-300 hover:text-white border border-zinc-850'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>4. Filter & Cakupan Data</span>
+            </button>
+          </div>
         </div>
 
-        {/* Scrollable Form Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1 max-h-[60vh] scrollbar-thin scrollbar-thumb-zinc-800">
+        {/* Scrollable Body Content */}
+        <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 max-h-[65vh] scrollbar-thin scrollbar-thumb-zinc-800">
           
-          {/* Section 1: Filters & Scope */}
-          <div className="space-y-3.5">
-            <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest flex items-center space-x-1.5">
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              <span>1. Atur Cakupan & Filter Laporan</span>
-            </h4>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 bg-zinc-950/40 rounded-xl border border-zinc-900/60">
-              {/* Select Warehouse Scope */}
-              <div>
-                <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">
-                  Cakupan Gudang
-                </label>
-                <select
-                  value={exportWarehouse}
-                  onChange={(e) => setExportWarehouse(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-850 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none cursor-pointer transition-colors"
-                >
-                  <option value="ALL">Semua Gudang (A - L)</option>
-                  {alphabetList.map((code) => (
-                    <option key={code} value={code}>Gudang {code}</option>
-                  ))}
-                </select>
+          {/* Success Download Alert Notification */}
+          <AnimatePresence>
+            {downloadSuccess && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="p-3.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 rounded-xl text-xs font-semibold flex items-center justify-between shadow-lg"
+              >
+                <div className="flex items-center space-x-2.5">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Berkas Laporan Audit Resmi (.PDF) berhasil diunduh ke perangkat Anda!</span>
+                </div>
+                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/30">
+                  {docNumber}
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* ================= TAB 1: DASBOR RINGKASAN & METRIK ================= */}
+          {activeTab === 'DASHBOARD' && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-6"
+            >
+              {/* Executive KPI Stats Cards */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {/* KPI 1 */}
+                <div className="p-4 bg-zinc-950/70 border border-zinc-850/80 rounded-xl flex flex-col justify-between relative overflow-hidden group hover:border-emerald-500/30 transition-all">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Total Laporan</span>
+                    <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+                      <FileText className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl font-black text-white font-mono">{totalReportsCount}</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">
+                      {exportWarehouse === 'ALL' ? 'Semua Gudang (A-L)' : `Gudang ${exportWarehouse}`}
+                    </div>
+                  </div>
+                </div>
+
+                {/* KPI 2 */}
+                <div className="p-4 bg-zinc-950/70 border border-zinc-850/80 rounded-xl flex flex-col justify-between relative overflow-hidden group hover:border-emerald-500/30 transition-all">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Tingkat Disetujui</span>
+                    <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl font-black text-emerald-400 font-mono">{approvalRate}%</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">
+                      {approvedCount} Disetujui • {pendingCount} Menunggu
+                    </div>
+                  </div>
+                </div>
+
+                {/* KPI 3 */}
+                <div className="p-4 bg-zinc-950/70 border border-zinc-850/80 rounded-xl flex flex-col justify-between relative overflow-hidden group hover:border-emerald-500/30 transition-all">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Kepatuhan Area</span>
+                    <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+                      <Building className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl font-black text-white font-mono">{cleanWarehousesCount} / 12</div>
+                    <div className="text-[10px] text-emerald-400 mt-0.5 font-semibold">
+                      {warehouseCleanRate}% Gudang Kategori Bersih
+                    </div>
+                  </div>
+                </div>
+
+                {/* KPI 4 */}
+                <div className="p-4 bg-zinc-950/70 border border-zinc-850/80 rounded-xl flex flex-col justify-between relative overflow-hidden group hover:border-emerald-500/30 transition-all">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">Perlu Perhatian</span>
+                    <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl font-black text-amber-400 font-mono">{dirtyWarehousesCount + rejectedCount}</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">
+                      {dirtyWarehousesCount} Gudang Kotor • {rejectedCount} Laporan Ditolak
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Select Status Scope */}
-              <div>
-                <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">
-                  Status Verifikasi
-                </label>
-                <select
-                  value={exportStatus}
-                  onChange={(e) => setExportStatus(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-850 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none cursor-pointer transition-colors"
-                >
-                  <option value="ALL">Semua Status</option>
-                  <option value="APPROVED">Disetujui Saja (Lolos Audit)</option>
-                  <option value="PENDING">Menunggu Verifikasi</option>
-                  <option value="REJECTED">Ditolak / Minta Revisi</option>
-                </select>
+              {/* Matriks Status Kepatuhan 12 Gudang (Gudang A s/d L) */}
+              <div className="p-4 sm:p-5 bg-zinc-950/60 border border-zinc-900 rounded-xl space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Layers className="w-4 h-4 text-emerald-400" />
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Matriks Kondisi 12 Gudang Terpadu (A s/d L)
+                    </h4>
+                  </div>
+                  <div className="flex items-center space-x-3 text-[10px] font-semibold text-zinc-400">
+                    <span className="flex items-center space-x-1"><span className="w-2 h-2 rounded-full bg-emerald-500"></span><span>Bersih ({cleanWarehousesCount})</span></span>
+                    <span className="flex items-center space-x-1"><span className="w-2 h-2 rounded-full bg-amber-500"></span><span>Proses ({inProgressWarehousesCount})</span></span>
+                    <span className="flex items-center space-x-1"><span className="w-2 h-2 rounded-full bg-rose-500"></span><span>Kotor ({dirtyWarehousesCount})</span></span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2.5">
+                  {warehouses.map((wh) => {
+                    const whReports = filteredExportData.filter(r => r.warehouse === wh.id);
+                    const isSelected = exportWarehouse === wh.id;
+                    const statusColor = 
+                      wh.status === 'BERSIH' 
+                        ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-400' 
+                        : wh.status === 'DALAM_PENGERJAAN' 
+                        ? 'border-amber-500/30 bg-amber-950/20 text-amber-400' 
+                        : 'border-rose-500/30 bg-rose-950/20 text-rose-400';
+
+                    return (
+                      <button
+                        key={wh.id}
+                        type="button"
+                        onClick={() => setExportWarehouse(exportWarehouse === wh.id ? 'ALL' : wh.id)}
+                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${statusColor} ${
+                          isSelected ? 'ring-2 ring-emerald-400 shadow-lg' : 'hover:scale-[1.02]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-extrabold text-xs">Gudang {wh.id}</span>
+                          <span className="text-[9px] font-mono opacity-80">{whReports.length} lap</span>
+                        </div>
+                        <div className="text-[10px] truncate text-zinc-400 mt-1">{wh.area}</div>
+                        <div className="text-[9px] font-bold mt-1 uppercase tracking-tight">
+                          {wh.status === 'BERSIH' ? '✓ Bersih' : wh.status === 'DALAM_PENGERJAAN' ? '⏳ Proses' : '⚠️ Kotor'}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Select Period Scope */}
-              <div>
-                <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">
-                  Rentang Waktu
-                </label>
-                <select
-                  value={exportPeriod}
-                  onChange={(e) => setExportPeriod(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-850 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none cursor-pointer transition-colors"
-                >
-                  <option value="ALL">Semua Log Riwayat</option>
-                  <option value="TODAY">Hari Ini Saja</option>
-                  <option value="WEEK">7 Hari Terakhir</option>
-                  <option value="MONTH">30 Hari Terakhir</option>
-                </select>
+              {/* Tabel Pratinjau Rekapitulasi Data Laporan */}
+              <div className="p-4 sm:p-5 bg-zinc-950/60 border border-zinc-900 rounded-xl space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center space-x-2">
+                    <BarChart3 className="w-4 h-4 text-emerald-400" />
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Daftar Log Laporan Siap Unduh ({filteredExportData.length} Baris)
+                    </h4>
+                  </div>
+                  
+                  {/* Instant Search Bar */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+                    <input
+                      type="text"
+                      value={searchKeyword}
+                      onChange={(e) => setSearchKeyword(e.target.value)}
+                      placeholder="Cari gudang / catatan..."
+                      className="pl-8 pr-3 py-1.5 bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none w-full sm:w-56 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div className="border border-zinc-850 rounded-lg overflow-hidden">
+                  <div className="max-h-56 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-800">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-zinc-900 text-zinc-400 text-[10px] uppercase tracking-wider sticky top-0 z-1">
+                        <tr>
+                          <th className="px-3 py-2">No</th>
+                          <th className="px-3 py-2">Waktu</th>
+                          <th className="px-3 py-2">Gudang</th>
+                          <th className="px-3 py-2">Petugas</th>
+                          <th className="px-3 py-2">Catatan Temuan</th>
+                          <th className="px-3 py-2">Feedback Kepala</th>
+                          <th className="px-3 py-2 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-855 text-zinc-300">
+                        {filteredExportData.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="px-4 py-8 text-center text-zinc-500 italic">
+                              Tidak ada laporan yang sesuai dengan filter atau kata kunci pencarian.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredExportData.map((item, index) => (
+                            <tr key={item.id} className="hover:bg-zinc-900/40 transition-colors">
+                              <td className="px-3 py-2 text-zinc-500 text-[11px]">{index + 1}</td>
+                              <td className="px-3 py-2 text-zinc-400 text-[11px] whitespace-nowrap">
+                                {new Date(item.timestamp).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })} {new Date(item.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                              </td>
+                              <td className="px-3 py-2 font-bold text-white whitespace-nowrap">
+                                Gudang {item.warehouse}
+                              </td>
+                              <td className="px-3 py-2 text-zinc-300 whitespace-nowrap">
+                                {item.cleanerName || 'Petugas'}
+                              </td>
+                              <td className="px-3 py-2 text-zinc-300 max-w-[180px] truncate" title={item.description}>
+                                {item.description || '-'}
+                              </td>
+                              <td className="px-3 py-2 text-zinc-400 max-w-[150px] truncate" title={item.feedback}>
+                                {item.feedback || '-'}
+                              </td>
+                              <td className="px-3 py-2 text-center whitespace-nowrap">
+                                {item.status === 'APPROVED' ? (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                    DISETUJUI
+                                  </span>
+                                ) : item.status === 'REJECTED' ? (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                    DITOLAK
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                    MENUNGGU
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1">
+                  <span>Menampilkan {filteredExportData.length} dari {reports.length} total laporan dalam sistem</span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('PREVIEW_SHEET')}
+                    className="text-emerald-400 hover:text-emerald-300 font-bold flex items-center space-x-1 cursor-pointer"
+                  >
+                    <span>Lihat Tata Letak Cetak PDF</span>
+                    <Eye className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
+            </motion.div>
+          )}
+
+          {/* ================= TAB 2: PRATINJAU LEMBAR AUDIT CETAK ================= */}
+          {activeTab === 'PREVIEW_SHEET' && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              <div className="flex items-center justify-between p-3 bg-zinc-950/60 border border-zinc-900 rounded-xl">
+                <div className="flex items-center space-x-2 text-xs text-zinc-300">
+                  <Eye className="w-4 h-4 text-emerald-400" />
+                  <span>Pratinjau Kertas Format A4 Berstandar ISO / Audit Mutu</span>
+                </div>
+                <div className="text-[11px] font-mono text-zinc-400">
+                  No Dokumen: <span className="text-emerald-400 font-bold">{docNumber}</span>
+                </div>
+              </div>
+
+              {/* Realistic A4 White Paper Container */}
+              <div className="bg-white text-zinc-900 rounded-xl shadow-2xl p-6 sm:p-8 space-y-6 border border-zinc-200">
+                {/* Official Paper Header */}
+                <div className="border-b-2 border-zinc-900 pb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-7 h-7 rounded bg-zinc-900 text-emerald-400 flex items-center justify-center font-black text-sm">
+                        GC
+                      </div>
+                      <span className="text-xl font-black tracking-tight text-zinc-950">GUDANGCLEAN</span>
+                    </div>
+                    <div className="text-xs font-bold text-zinc-700">{systemSettings?.systemName || 'Sistem Pemantauan Kebersihan Terpadu - Gudang A s/d L'}</div>
+                    <div className="text-[11px] text-zinc-500">{companyName} • Divisi Audit & Pemeliharaan Fasilitas Logistik</div>
+                  </div>
+
+                  <div className="p-3 bg-zinc-50 border border-zinc-300 rounded-lg text-right sm:text-right w-full sm:w-auto">
+                    <div className="text-[9px] font-bold text-emerald-700 uppercase tracking-widest">DOKUMEN AUDIT RESMI</div>
+                    <div className="text-xs font-mono font-extrabold text-zinc-900 mt-0.5">{docNumber}</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">Tgl Cetak: {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</div>
+                  </div>
+                </div>
+
+                {/* Title & Scope Info */}
+                <div className="space-y-1.5">
+                  <h3 className="text-base font-extrabold text-zinc-950 uppercase tracking-tight">
+                    BERITA ACARA & REKAPITULASI AUDIT KEBERSIHAN
+                  </h3>
+                  <div className="text-xs text-zinc-600 flex flex-wrap gap-x-4 gap-y-1">
+                    <span><strong>Cakupan:</strong> {exportWarehouse === 'ALL' ? 'Semua Gudang (A - L)' : `Gudang ${exportWarehouse}`}</span>
+                    <span><strong>Periode:</strong> {exportPeriod === 'ALL' ? 'Semua Waktu' : exportPeriod === 'TODAY' ? 'Hari Ini' : exportPeriod === 'WEEK' ? '7 Hari Terakhir' : '30 Hari Terakhir'}</span>
+                    <span><strong>Total Data:</strong> {filteredExportData.length} Catatan Audit</span>
+                  </div>
+                </div>
+
+                {/* Mini Summary Stat Boxes in Paper */}
+                <div className="grid grid-cols-4 gap-2.5 text-center">
+                  <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg">
+                    <div className="text-base font-black text-emerald-700">{approvalRate}%</div>
+                    <div className="text-[9px] font-bold text-emerald-800 uppercase">Lolos Standar</div>
+                  </div>
+                  <div className="p-2.5 bg-zinc-50 border border-zinc-200 rounded-lg">
+                    <div className="text-base font-black text-zinc-800">{cleanWarehousesCount} Area</div>
+                    <div className="text-[9px] font-bold text-zinc-600 uppercase">Gudang Bersih</div>
+                  </div>
+                  <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+                    <div className="text-base font-black text-amber-700">{inProgressWarehousesCount} Area</div>
+                    <div className="text-[9px] font-bold text-amber-800 uppercase">Pembersihan</div>
+                  </div>
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg">
+                    <div className="text-base font-black text-rose-700">{dirtyWarehousesCount} Area</div>
+                    <div className="text-[9px] font-bold text-rose-800 uppercase">Perlu Tindakan</div>
+                  </div>
+                </div>
+
+                {/* Document Table Sample (First 5 Rows Preview) */}
+                <div className="border border-zinc-300 rounded-lg overflow-hidden">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-zinc-900 text-white text-[10px]">
+                      <tr>
+                        <th className="p-2 text-center w-8">No</th>
+                        <th className="p-2">Waktu / Tanggal</th>
+                        <th className="p-2">Gudang</th>
+                        <th className="p-2">Petugas</th>
+                        <th className="p-2">Catatan Kebersihan</th>
+                        <th className="p-2 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-200 text-zinc-800 text-[11px]">
+                      {filteredExportData.slice(0, 5).map((item, index) => (
+                        <tr key={item.id} className={index % 2 === 1 ? 'bg-zinc-50' : 'bg-white'}>
+                          <td className="p-2 text-center text-zinc-500">{index + 1}</td>
+                          <td className="p-2 whitespace-nowrap text-[10px]">
+                            {new Date(item.timestamp).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                          </td>
+                          <td className="p-2 font-bold text-zinc-950">Gudang {item.warehouse}</td>
+                          <td className="p-2">{item.cleanerName || 'Petugas'}</td>
+                          <td className="p-2 max-w-[200px] truncate">{item.description || '-'}</td>
+                          <td className="p-2 text-center font-bold">
+                            <span className={item.status === 'APPROVED' ? 'text-emerald-600' : item.status === 'REJECTED' ? 'text-rose-600' : 'text-amber-600'}>
+                              {item.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {filteredExportData.length > 5 && (
+                    <div className="p-2 bg-zinc-100 text-center text-[10px] text-zinc-600 font-medium border-t border-zinc-200">
+                      + Menampilkan 5 sampel dari total {filteredExportData.length} baris (seluruh data akan otomatis disertakan dalam berkas PDF).
+                    </div>
+                  )}
+                </div>
+
+                {/* Lembar Pengesahan Tanda Tangan (Live Signature Preview Sheet) */}
+                <div className="pt-4 border-t-2 border-zinc-200 space-y-3">
+                  <div className="text-xs font-bold text-zinc-900 uppercase tracking-wider">
+                    Lembar Pengesahan & Tanda Tangan Penjamin Mutu
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                    {/* Signer 1: Petugas */}
+                    <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-200 text-center space-y-1">
+                      <div className="text-[10px] font-semibold text-zinc-500">Disiapkan & Dilaporkan:</div>
+                      <div className="h-14 flex items-center justify-center my-1">
+                        {cleanerSignature ? (
+                          <img src={cleanerSignature} alt="TTD Petugas" className="max-h-full max-w-full object-contain" />
+                        ) : (
+                          <span className="text-[10px] text-zinc-400 italic">Belum ada TTD</span>
+                        )}
+                      </div>
+                      <div className="border-t border-zinc-400 pt-1">
+                        <div className="text-xs font-bold text-zinc-900">{cleanerName}</div>
+                        <div className="text-[10px] text-zinc-500">{cleanerTitle}</div>
+                        <div className="text-[9px] text-zinc-400">{cleanerCompany}</div>
+                      </div>
+                    </div>
+
+                    {/* Signer 2: Kepala Gudang */}
+                    <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-200 text-center space-y-1">
+                      <div className="text-[10px] font-semibold text-zinc-500">Diverifikasi & Disahkan:</div>
+                      <div className="h-14 flex items-center justify-center my-1">
+                        {kepalaSignature ? (
+                          <img src={kepalaSignature} alt="TTD Kepala" className="max-h-full max-w-full object-contain" />
+                        ) : (
+                          <span className="text-[10px] text-zinc-400 italic">Belum ada TTD</span>
+                        )}
+                      </div>
+                      <div className="border-t border-zinc-400 pt-1">
+                        <div className="text-xs font-bold text-zinc-900">{kepalaName}</div>
+                        <div className="text-[10px] text-zinc-500">{kepalaTitle}</div>
+                        <div className="text-[9px] text-zinc-400">{kepalaCompany}</div>
+                      </div>
+                    </div>
+
+                    {/* Signer 3: Auditor */}
+                    <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-200 text-center space-y-1">
+                      <div className="text-[10px] font-semibold text-zinc-500">Diverifikasi Auditor Mutu:</div>
+                      <div className="h-14 flex items-center justify-center my-1">
+                        {auditorSignature ? (
+                          <img src={auditorSignature} alt="TTD Auditor" className="max-h-full max-w-full object-contain" />
+                        ) : (
+                          <span className="text-[10px] text-zinc-400 italic">Belum ada TTD</span>
+                        )}
+                      </div>
+                      <div className="border-t border-zinc-400 pt-1">
+                        <div className="text-xs font-bold text-zinc-900">{auditorName}</div>
+                        <div className="text-[10px] text-zinc-500">{auditorTitle}</div>
+                        <div className="text-[9px] text-zinc-400">{auditorCompany}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </motion.div>
+          )}
+
+          {/* ================= TAB 3: PENGESAHAN & TTD DIGITAL ================= */}
+          {activeTab === 'SIGNERS' && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest flex items-center space-x-1.5">
+                  <FileCheck2 className="w-3.5 h-3.5" />
+                  <span>Kustomisasi Nama & Tanda Tangan Penjamin Mutu</span>
+                </h4>
+                <span className="text-[10px] text-zinc-400 font-medium">
+                  Disematkan otomatis ke lembar akhir dokumen PDF
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                
+                {/* Card 1: Petugas Staf Kebersihan */}
+                <div className="p-4 bg-zinc-950/60 rounded-xl border border-zinc-900/80 space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-6 h-6 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-xs">
+                      1
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Petugas Staf Gudang</div>
+                      <div className="text-[10px] text-zinc-400">Pelaksana Kebersihan</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Nama Petugas
+                      </label>
+                      <input
+                        type="text"
+                        value={cleanerName}
+                        onChange={(e) => setCleanerName(e.target.value)}
+                        className="w-full bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition-colors"
+                        placeholder="Nama Petugas Staf"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Jabatan / Divisi
+                      </label>
+                      <input
+                        type="text"
+                        value={cleanerTitle}
+                        onChange={(e) => setCleanerTitle(e.target.value)}
+                        className="w-full bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition-colors"
+                        placeholder="Jabatan"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Signature Preview & Action */}
+                  <div className="pt-2 border-t border-zinc-900">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-semibold text-zinc-400">Tanda Tangan Digital (TTD)</span>
+                      {cleanerSignature && (
+                        <button
+                          type="button"
+                          onClick={() => setCleanerSignature('')}
+                          className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors flex items-center space-x-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Hapus</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="h-16 w-full bg-zinc-900/40 border border-dashed border-zinc-800 rounded-lg flex items-center justify-center p-2 relative overflow-hidden">
+                      {cleanerSignature ? (
+                        <img
+                          src={cleanerSignature}
+                          alt="TTD Petugas"
+                          className="max-h-full max-w-full object-contain filter invert brightness-125"
+                        />
+                      ) : (
+                        <span className="text-[10px] text-zinc-400 italic">Belum ada TTD</span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveSignatureTarget('cleaner')}
+                      className="w-full mt-2 py-1.5 px-2.5 bg-emerald-600/10 hover:bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold rounded-lg transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                    >
+                      <PenTool className="w-3.5 h-3.5" />
+                      <span>{cleanerSignature ? 'Ubah / Gores Ulang TTD' : 'Tambah Tanda Tangan'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Card 2: Kepala Gudang */}
+                <div className="p-4 bg-zinc-950/60 rounded-xl border border-zinc-900/80 space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-6 h-6 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-xs">
+                      2
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Kepala Gudang</div>
+                      <div className="text-[10px] text-zinc-400">Verifikator & Pengesah</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Nama Kepala Gudang
+                      </label>
+                      <input
+                        type="text"
+                        value={kepalaName}
+                        onChange={(e) => setKepalaName(e.target.value)}
+                        className="w-full bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition-colors"
+                        placeholder="Nama Kepala Gudang"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Jabatan / Instansi
+                      </label>
+                      <input
+                        type="text"
+                        value={kepalaTitle}
+                        onChange={(e) => setKepalaTitle(e.target.value)}
+                        className="w-full bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition-colors"
+                        placeholder="Jabatan"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Signature Preview & Action */}
+                  <div className="pt-2 border-t border-zinc-900">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-semibold text-zinc-400">Tanda Tangan Digital (TTD)</span>
+                      {kepalaSignature && (
+                        <button
+                          type="button"
+                          onClick={() => setKepalaSignature('')}
+                          className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors flex items-center space-x-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Hapus</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="h-16 w-full bg-zinc-900/40 border border-dashed border-zinc-800 rounded-lg flex items-center justify-center p-2 relative overflow-hidden">
+                      {kepalaSignature ? (
+                        <img
+                          src={kepalaSignature}
+                          alt="TTD Kepala"
+                          className="max-h-full max-w-full object-contain filter invert brightness-125"
+                        />
+                      ) : (
+                        <span className="text-[10px] text-zinc-400 italic">Belum ada TTD</span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveSignatureTarget('kepala')}
+                      className="w-full mt-2 py-1.5 px-2.5 bg-emerald-600/10 hover:bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold rounded-lg transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                    >
+                      <PenTool className="w-3.5 h-3.5" />
+                      <span>{kepalaSignature ? 'Ubah / Gores Ulang TTD' : 'Tambah Tanda Tangan'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Card 3: Auditor Mutu */}
+                <div className="p-4 bg-zinc-950/60 rounded-xl border border-zinc-900/80 space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-6 h-6 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-xs">
+                      3
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Auditor Mutu</div>
+                      <div className="text-[10px] text-zinc-400">Penjamin Mutu Eksternal / QA</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Nama Auditor
+                      </label>
+                      <input
+                        type="text"
+                        value={auditorName}
+                        onChange={(e) => setAuditorName(e.target.value)}
+                        className="w-full bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition-colors"
+                        placeholder="Nama Auditor"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Badan Audit / Perusahaan
+                      </label>
+                      <input
+                        type="text"
+                        value={auditorCompany}
+                        onChange={(e) => setAuditorCompany(e.target.value)}
+                        className="w-full bg-zinc-900/80 border border-zinc-800 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition-colors"
+                        placeholder="Badan Audit"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Signature Preview & Action */}
+                  <div className="pt-2 border-t border-zinc-900">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-semibold text-zinc-400">Tanda Tangan Digital (TTD)</span>
+                      {auditorSignature && (
+                        <button
+                          type="button"
+                          onClick={() => setAuditorSignature('')}
+                          className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors flex items-center space-x-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Hapus</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="h-16 w-full bg-zinc-900/40 border border-dashed border-zinc-800 rounded-lg flex items-center justify-center p-2 relative overflow-hidden">
+                      {auditorSignature ? (
+                        <img
+                          src={auditorSignature}
+                          alt="TTD Auditor"
+                          className="max-h-full max-w-full object-contain filter invert brightness-125"
+                        />
+                      ) : (
+                        <span className="text-[10px] text-zinc-400 italic">Belum ada TTD</span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveSignatureTarget('auditor')}
+                      className="w-full mt-2 py-1.5 px-2.5 bg-emerald-600/10 hover:bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold rounded-lg transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                    >
+                      <PenTool className="w-3.5 h-3.5" />
+                      <span>{auditorSignature ? 'Ubah / Gores Ulang TTD' : 'Tambah Tanda Tangan'}</span>
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+            </motion.div>
+          )}
+
+          {/* ================= TAB 4: FILTER & CAKUPAN DATA ================= */}
+          {activeTab === 'FILTER' && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest flex items-center space-x-1.5">
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>Pengaturan Cakupan & Filter Data Dokumen</span>
+                </h4>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-5 bg-zinc-950/60 rounded-xl border border-zinc-900">
+                {/* Select Warehouse Scope */}
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
+                    Cakupan Gudang
+                  </label>
+                  <select
+                    value={exportWarehouse}
+                    onChange={(e) => setExportWarehouse(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none cursor-pointer transition-colors"
+                  >
+                    <option value="ALL">Semua Gudang (A - L)</option>
+                    {alphabetList.map((code) => (
+                      <option key={code} value={code}>Gudang {code}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Select Status Scope */}
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
+                    Status Verifikasi
+                  </label>
+                  <select
+                    value={exportStatus}
+                    onChange={(e) => setExportStatus(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none cursor-pointer transition-colors"
+                  >
+                    <option value="ALL">Semua Status</option>
+                    <option value="APPROVED">Disetujui Saja (Lolos Audit)</option>
+                    <option value="PENDING">Menunggu Verifikasi</option>
+                    <option value="REJECTED">Ditolak / Minta Revisi</option>
+                  </select>
+                </div>
+
+                {/* Select Period Scope */}
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
+                    Rentang Waktu Laporan
+                  </label>
+                  <select
+                    value={exportPeriod}
+                    onChange={(e) => setExportPeriod(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 outline-none cursor-pointer transition-colors"
+                  >
+                    <option value="ALL">Semua Catatan Historis</option>
+                    <option value="TODAY">Hari Ini Saja</option>
+                    <option value="WEEK">7 Hari Terakhir</option>
+                    <option value="MONTH">30 Hari Terakhir</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Reset Filter Button */}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportWarehouse('ALL');
+                    setExportStatus('ALL');
+                    setExportPeriod('ALL');
+                    setSearchKeyword('');
+                  }}
+                  className="px-3.5 py-1.5 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-800 transition-colors flex items-center space-x-1.5 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset Semua Filter ke Default</span>
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Bottom Summary Bar & Alternative Format */}
+          <div className="flex flex-col sm:flex-row items-center justify-between p-3.5 bg-zinc-950/60 rounded-xl border border-zinc-900 gap-3 text-xs">
+            <div className="flex items-center space-x-2 text-zinc-400 text-[11px]">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>Dokumen siap cetak: <strong>{filteredExportData.length} laporan terpilih</strong> ({exportWarehouse === 'ALL' ? 'Semua Gudang A-L' : `Gudang ${exportWarehouse}`})</span>
             </div>
-          </div>
 
-          {/* Statistics Check */}
-          <div className="p-3.5 bg-emerald-500/5 border border-emerald-500/10 rounded-xl flex items-center justify-between text-xs">
-            <div className="flex items-center space-x-2.5 text-zinc-300">
-              <ShieldCheck className="w-4.5 h-4.5 text-emerald-400 shrink-0" />
-              <span>
-                Menyiapkan ekspor sebanyak <strong className="text-white font-mono">{filteredExportData.length} baris laporan</strong> kebersihan.
-              </span>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-850 text-emerald-400 font-semibold rounded-lg border border-emerald-500/20 text-xs transition-colors flex items-center space-x-1.5 cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Unduh Excel (.xls)</span>
+              </button>
             </div>
-            <span className="text-[10px] text-zinc-500 font-medium">Ready for Audit</span>
           </div>
 
         </div>
 
         {/* Footer Actions */}
-        <div className="p-5 border-t border-zinc-900 bg-zinc-950/40 flex flex-col sm:flex-row justify-between items-center gap-3">
-          <div className="flex items-center space-x-1 text-[10px] text-zinc-500">
-            <Info className="w-3.5 h-3.5 text-zinc-600" />
-            <span>Format ini telah lolos standarisasi laporan audit mutu industri.</span>
+        <div className="p-4 sm:p-5 border-t border-zinc-900 bg-zinc-950/60 flex flex-col sm:flex-row justify-between items-center gap-3">
+          <div className="flex items-center space-x-1.5 text-[10px] text-zinc-400">
+            <Info className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span>Dokumen PDF audit resmi diunduh langsung ke folder unduhan browser Anda.</span>
           </div>
 
           <div className="flex items-center space-x-2.5 self-stretch sm:self-auto">
@@ -1291,26 +1445,73 @@ export default function ExportReportsModal({
               onClick={onClose}
               className="flex-1 sm:flex-initial px-4 py-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white text-xs font-bold rounded-xl transition-all cursor-pointer border border-zinc-800/60"
             >
-              Batal
+              Tutup
             </button>
 
-            {/* PDF PRINT / EXPORT BUTTON */}
+            {/* DIRECT PDF DOWNLOAD BUTTON */}
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               type="button"
-              onClick={handlePrintPDF}
-              className="flex-1 sm:flex-initial inline-flex items-center justify-center space-x-1.5 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer border-none shadow-md shadow-emerald-500/10"
-              title="Unduh Laporan / Simpan PDF"
-              id="btn-download-pdf-only"
+              disabled={isExportingPdf}
+              onClick={handleDownloadAuditPDFDirectly}
+              className="flex-1 sm:flex-initial inline-flex items-center justify-center space-x-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-all cursor-pointer border-none shadow-lg shadow-emerald-600/25"
+              title="Unduh Berkas Laporan PDF Langsung Tanpa Print"
+              id="btn-download-pdf-direct"
             >
-              <Printer className="w-4 h-4 shrink-0" />
-              <span>Unduh Laporan (PDF)</span>
+              <Download className="w-4 h-4 shrink-0" />
+              <span>{isExportingPdf ? 'Membuat PDF...' : 'Unduh Laporan Audit (PDF)'}</span>
             </motion.button>
           </div>
         </div>
 
       </motion.div>
+
+      {/* Signature Pad Modal inside ExportReportsModal */}
+      {activeSignatureTarget && (
+        <SignaturePadModal
+          isOpen={!!activeSignatureTarget}
+          onClose={() => setActiveSignatureTarget(null)}
+          title={
+            activeSignatureTarget === 'cleaner'
+              ? 'Tanda Tangan Petugas Staf Kebersihan'
+              : activeSignatureTarget === 'kepala'
+              ? 'Tanda Tangan Kepala Gudang'
+              : 'Tanda Tangan Penjamin Mutu / Auditor'
+          }
+          subtitle={
+            activeSignatureTarget === 'cleaner'
+              ? `Penandatangan: ${cleanerName}`
+              : activeSignatureTarget === 'kepala'
+              ? `Penandatangan: ${kepalaName}`
+              : `Penandatangan: ${auditorName}`
+          }
+          signerName={
+            activeSignatureTarget === 'cleaner'
+              ? cleanerName
+              : activeSignatureTarget === 'kepala'
+              ? kepalaName
+              : auditorName
+          }
+          initialSignature={
+            activeSignatureTarget === 'cleaner'
+              ? cleanerSignature
+              : activeSignatureTarget === 'kepala'
+              ? kepalaSignature
+              : auditorSignature
+          }
+          onSave={(signatureDataUrl) => {
+            if (activeSignatureTarget === 'cleaner') {
+              setCleanerName(cleanerName);
+              setCleanerSignature(signatureDataUrl);
+            } else if (activeSignatureTarget === 'kepala') {
+              setKepalaSignature(signatureDataUrl);
+            } else if (activeSignatureTarget === 'auditor') {
+              setAuditorSignature(signatureDataUrl);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

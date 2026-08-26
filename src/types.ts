@@ -56,3 +56,31 @@ export interface Attendance {
   type: 'MASUK' | 'KELUAR'; // Check-in or Check-out
 }
 
+export interface SystemSettings {
+  id?: string;
+  companyName: string;
+  systemName: string;
+  tagline: string;
+  auditorName: string;
+  auditorTitle: string;
+  auditorCompany: string;
+  auditorSignature?: string; // base64 / data URL
+  kepalaSignerName?: string;
+  kepalaSignerTitle?: string;
+  kepalaSignerCompany?: string;
+  kepalaSignature?: string; // base64 / data URL
+  cleanerSignerName?: string;
+  cleanerSignerTitle?: string;
+  cleanerSignerCompany?: string;
+  cleanerSignature?: string; // base64 / data URL
+  documentPrefix: string;
+  contactEmail: string;
+  contactPhone: string;
+  workShiftStart: string;
+  workShiftEnd: string;
+  allowAutoApprove: boolean;
+  minCleanDurationMinutes: number;
+  emergencyAlertEnabled: boolean;
+  notesFooter: string;
+}
+

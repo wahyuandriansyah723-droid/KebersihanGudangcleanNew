@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle, Info, LogOut, RefreshCw, Sparkles, UserCheck, AlertTriangle } from 'lucide-react';
-import { User, Report, Task, Warehouse, Attendance } from './types';
+import { User, Report, Task, Warehouse, Attendance, SystemSettings } from './types';
+import { defaultSystemSettings } from './mockData';
 import Login from './components/Login';
 import Navbar from './components/Navbar';
 import DashboardPetugas from './components/DashboardPetugas';
@@ -19,6 +20,7 @@ import {
   deleteTaskFromFirestore,
   saveAttendanceToFirestore,
   deleteAttendanceFromFirestore,
+  saveSystemSettingsToFirestore,
   createSessionInFirestore,
   getSessionFromFirestore,
   deleteSessionFromFirestore,
@@ -39,6 +41,7 @@ export default function App() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [attendanceList, setAttendanceList] = useState<Attendance[]>([]);
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>(defaultSystemSettings);
 
   // UI Control State
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -98,12 +101,19 @@ export default function App() {
       setAttendanceList(data.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
     });
 
+    const unsubSettings = subscribeToCollection<SystemSettings>('systemSettings', (data) => {
+      if (data && data.length > 0) {
+        setSystemSettings(data[0]);
+      }
+    });
+
     return () => {
       unsubWarehouses();
       unsubReports();
       unsubTasks();
       unsubUsers();
       unsubAttendance();
+      unsubSettings();
     };
   }, []);
 
@@ -498,6 +508,35 @@ export default function App() {
     setIsReportModalOpen(true);
   };
 
+  const handleSaveSystemSettings = async (newSettings: SystemSettings) => {
+    try {
+      await saveSystemSettingsToFirestore(newSettings);
+      setSystemSettings(newSettings);
+      showToast('Pengaturan sistem berhasil disimpan!', 'success');
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+      showToast('Gagal menyimpan pengaturan.', 'error');
+      throw err;
+    }
+  };
+
+  const handleUpdateWarehouseArea = async (warehouseId: string, newArea: string) => {
+    const existing = warehouses.find(w => w.id === warehouseId);
+    if (!existing) return;
+    const updated: Warehouse = {
+      ...existing,
+      area: newArea
+    };
+    try {
+      await saveWarehouseToFirestore(updated);
+      showToast(`Spesifikasi Area Gudang ${warehouseId} berhasil diperbarui.`, 'success');
+    } catch (err) {
+      console.error('Failed to update warehouse area:', err);
+      showToast('Gagal memperbarui area gudang.', 'error');
+      throw err;
+    }
+  };
+
   if (loadingSession) {
     return (
       <div className="min-h-screen bg-[#0a0b0e] text-zinc-100 flex flex-col justify-center items-center font-sans">
@@ -576,6 +615,7 @@ export default function App() {
                 tasks={tasks}
                 users={users}
                 attendanceList={attendanceList}
+                systemSettings={systemSettings}
                 onApproveReport={handleApproveReport}
                 onRejectReport={handleRejectReport}
                 onUpdateWarehouseStatus={handleUpdateWarehouseStatus}
@@ -584,6 +624,9 @@ export default function App() {
                 onDeleteReport={handleDeleteReport}
                 onDeleteUser={handleDeleteUser}
                 onDeleteAttendance={handleDeleteAttendance}
+                onSaveSettings={handleSaveSystemSettings}
+                onUpdateWarehouseArea={handleUpdateWarehouseArea}
+                onResetDatabase={handleResetDemoData}
               />
             )}
           </main>

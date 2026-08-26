@@ -1,6 +1,6 @@
 {
   "name": "Remix Remix: GudangClean",
-  "description": "Sistem modern pemantauan kebersihan dan pemeliharaan Gudang A sampai L untuk Kepala Gudang dan Petugas Kebersihan.",
+  "description": "Sistem manajemen & audit kebersihan Gudang A-L dengan lembar pengesahan, tanda tangan digital (TTD), dan ekspor PDF resmi.",
   "requestFramePermissions": [
     "camera"
   ],

@@ -27,12 +27,15 @@ import {
   Trash2,
   UserCheck,
   MapPin,
-  Download
+  Download,
+  Settings
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Report, Warehouse, User, Task, Attendance } from '../types';
+import { Report, Warehouse, User, Task, Attendance, SystemSettings } from '../types';
+import { defaultSystemSettings } from '../mockData';
 import ExportReportsModal from './ExportReportsModal';
+import DashboardSettings from './DashboardSettings';
 
 interface DashboardKepalaProps {
   currentUser: User;
@@ -41,6 +44,7 @@ interface DashboardKepalaProps {
   tasks: Task[];
   users: User[];
   attendanceList: Attendance[];
+  systemSettings?: SystemSettings;
   onApproveReport: (id: string, feedback?: string) => void;
   onRejectReport: (id: string, feedback?: string) => void;
   onUpdateWarehouseStatus: (id: string, status: Warehouse['status'], lastCleanedBy?: string) => void;
@@ -56,6 +60,10 @@ interface DashboardKepalaProps {
   onDeleteReport: (id: string) => void;
   onDeleteUser: (id: string) => void;
   onDeleteAttendance?: (ids: string[]) => void;
+  onSaveSettings?: (settings: SystemSettings) => Promise<void>;
+  onUpdateWarehouseArea?: (id: string, newArea: string) => Promise<void>;
+  onResetDatabase?: () => void;
+  onImportDatabase?: (data: any) => Promise<void>;
 }
 
 export default function DashboardKepala({
@@ -65,6 +73,7 @@ export default function DashboardKepala({
   tasks,
   users,
   attendanceList,
+  systemSettings = defaultSystemSettings,
   onApproveReport,
   onRejectReport,
   onUpdateWarehouseStatus,
@@ -72,9 +81,13 @@ export default function DashboardKepala({
   onDeleteTask,
   onDeleteReport,
   onDeleteUser,
-  onDeleteAttendance
+  onDeleteAttendance,
+  onSaveSettings,
+  onUpdateWarehouseArea,
+  onResetDatabase,
+  onImportDatabase
 }: DashboardKepalaProps) {
-  const [activeTab, setActiveTab] = useState<'MONITORING' | 'TASKS' | 'PETUGAS' | 'ABSENSI'>('MONITORING');
+  const [activeTab, setActiveTab] = useState<'MONITORING' | 'TASKS' | 'PETUGAS' | 'ABSENSI' | 'SETTINGS'>('MONITORING');
   const [periodFilter, setPeriodFilter] = useState<'ALL' | 'TODAY' | 'WEEK' | 'MONTH'>('ALL');
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportPeriod, setExportPeriod] = useState<'TODAY' | 'WEEK' | 'MONTH'>('TODAY');
@@ -382,6 +395,19 @@ export default function DashboardKepala({
           <UserCheck className="w-4 h-4" />
           <span>Buku Absen Petugas ({attendanceList.length})</span>
           {activeTab === 'ABSENSI' && (
+            <motion.div layoutId="activeTabUnderlineKepala" className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab('SETTINGS')}
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 outline-none ${
+            activeTab === 'SETTINGS' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+          }`}
+          id="tab-settings-kepala"
+        >
+          <Settings className="w-4 h-4" />
+          <span>Pengaturan Sistem</span>
+          {activeTab === 'SETTINGS' && (
             <motion.div layoutId="activeTabUnderlineKepala" className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
           )}
         </button>
@@ -1357,6 +1383,29 @@ export default function DashboardKepala({
             </div>
           </motion.div>
         )}
+
+        {activeTab === 'SETTINGS' && (
+          <motion.div
+            key="settings-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+          >
+            <DashboardSettings
+              systemSettings={systemSettings}
+              warehouses={warehouses}
+              users={users}
+              reports={reports}
+              tasks={tasks}
+              attendanceList={attendanceList}
+              onSaveSettings={onSaveSettings || (async () => {})}
+              onUpdateWarehouseArea={onUpdateWarehouseArea || (async () => {})}
+              onResetDatabase={onResetDatabase || (() => {})}
+              onImportDatabase={onImportDatabase}
+            />
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* Verification / Expand Detail Modal (Lightbox) */}
@@ -1689,6 +1738,7 @@ export default function DashboardKepala({
             warehouses={warehouses}
             users={users}
             currentUser={currentUser}
+            systemSettings={systemSettings}
           />
         )}
       </AnimatePresence>

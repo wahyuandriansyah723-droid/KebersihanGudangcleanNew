@@ -14,8 +14,8 @@ import {
   where
 } from 'firebase/firestore';
 import { getAuth, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
-import { initialWarehouses, demoUsers } from '../mockData';
-import { User, Warehouse, Report, Task, Attendance } from '../types';
+import { initialWarehouses, demoUsers, defaultSystemSettings } from '../mockData';
+import { User, Warehouse, Report, Task, Attendance, SystemSettings } from '../types';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase
@@ -145,6 +145,13 @@ export async function seedInitialDataIfEmpty() {
       });
       await batch.commit();
       console.log('Successfully seeded demo users into Firestore');
+    }
+
+    const settingsSnapshot = await getDocs(collection(db, 'systemSettings'));
+    if (settingsSnapshot.empty) {
+      console.log('Seeding default system settings...');
+      await setDoc(doc(db, 'systemSettings', 'main-settings'), defaultSystemSettings);
+      console.log('Successfully seeded default system settings into Firestore');
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, 'warehouses_and_users');
@@ -321,12 +328,36 @@ export async function deleteSessionFromFirestore(userId: string) {
   }
 }
 
+// System Settings CRUD
+export async function saveSystemSettingsToFirestore(settings: SystemSettings) {
+  try {
+    const id = settings.id || 'main-settings';
+    await setDoc(doc(db, 'systemSettings', id), settings);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `systemSettings/${settings.id || 'main-settings'}`);
+    throw error;
+  }
+}
+
+export async function getSystemSettingsFromFirestore(): Promise<SystemSettings | null> {
+  try {
+    const docSnap = await getDoc(doc(db, 'systemSettings', 'main-settings'));
+    if (docSnap.exists()) {
+      return docSnap.data() as SystemSettings;
+    }
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, 'systemSettings/main-settings');
+    return null;
+  }
+}
+
 // Clear all data and re-seed
 export async function resetDatabaseToDefault() {
   try {
     const batch = writeBatch(db);
 
-    // 1. Delete all current warehouses, reports, tasks, users
+    // 1. Delete all current warehouses, reports, tasks, users, attendance, settings
     const warehousesSnap = await getDocs(collection(db, 'warehouses'));
     warehousesSnap.forEach((d) => batch.delete(d.ref));
 
@@ -342,14 +373,26 @@ export async function resetDatabaseToDefault() {
     const attendanceSnap = await getDocs(collection(db, 'attendance'));
     attendanceSnap.forEach((d) => batch.delete(d.ref));
 
+    const settingsSnap = await getDocs(collection(db, 'systemSettings'));
+    settingsSnap.forEach((d) => batch.delete(d.ref));
+
     await batch.commit();
 
-    // 2. Re-seed warehouses
+    // 2. Re-seed warehouses, users, settings
     const seedBatch = writeBatch(db);
     initialWarehouses.forEach((w) => {
       const docRef = doc(db, 'warehouses', w.id);
       seedBatch.set(docRef, w);
     });
+
+    demoUsers.forEach((u) => {
+      const docRef = doc(db, 'users', u.id);
+      seedBatch.set(docRef, u);
+    });
+
+    const settingsRef = doc(db, 'systemSettings', 'main-settings');
+    seedBatch.set(settingsRef, defaultSystemSettings);
+
     await seedBatch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'batch_reset');
