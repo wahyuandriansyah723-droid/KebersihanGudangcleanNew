@@ -1,0 +1,69 @@
+{
+  "collections": {
+    "warehouses": {
+      "schema": {
+        "id": "string",
+        "name": "string",
+        "status": "string",
+        "area": "string",
+        "lastCleaned": "string?",
+        "lastCleanedBy": "string?"
+      }
+    },
+    "reports": {
+      "schema": {
+        "id": "string",
+        "cleanerName": "string",
+        "cleanerEmail": "string",
+        "warehouse": "string",
+        "description": "string",
+        "photoBefore": "string",
+        "photoAfter": "string",
+        "timestamp": "string",
+        "status": "string",
+        "feedback": "string?"
+      }
+    },
+    "tasks": {
+      "schema": {
+        "id": "string",
+        "warehouse": "string",
+        "taskName": "string",
+        "description": "string",
+        "assignedToEmail": "string",
+        "status": "string",
+        "date": "string"
+      }
+    },
+    "users": {
+      "schema": {
+        "id": "string",
+        "name": "string",
+        "email": "string",
+        "role": "string",
+        "avatarUrl": "string"
+      }
+    },
+    "sessions": {
+      "schema": {
+        "id": "string",
+        "user": "map",
+        "createdAt": "string"
+      }
+    },
+    "attendance": {
+      "schema": {
+        "id": "string",
+        "userId": "string",
+        "userName": "string",
+        "userEmail": "string",
+        "timestamp": "string",
+        "date": "string",
+        "time": "string",
+        "photo": "string",
+        "location": "string",
+        "type": "string"
+      }
+    }
+  }
+}

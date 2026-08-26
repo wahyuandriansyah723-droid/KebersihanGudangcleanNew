@@ -1,0 +1,1146 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  ClipboardList,
+  PlusCircle,
+  FileCheck2,
+  Clock,
+  MapPin,
+  ChevronRight,
+  Sparkles,
+  CheckCircle2,
+  CalendarDays,
+  Check,
+  Eye,
+  MessageCircle,
+  ArrowRight,
+  X,
+  Camera,
+  Upload,
+  UserCheck,
+  RefreshCw,
+  LogOut,
+  Download,
+  Trash2,
+  AlertTriangle
+} from 'lucide-react';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { User, Task, Report, Warehouse, Attendance } from '../types';
+
+interface DashboardPetugasProps {
+  currentUser: User;
+  tasks: Task[];
+  reports: Report[];
+  warehouses: Warehouse[];
+  onOpenReportModal: (preselectedWarehouse?: string) => void;
+  attendanceList: Attendance[];
+  onAddAttendance: (attendanceData: {
+    photo: string;
+    location: string;
+    type: 'MASUK' | 'KELUAR';
+    customUserName?: string;
+    customUserEmail?: string;
+  }) => Promise<void>;
+}
+
+export default function DashboardPetugas({
+  currentUser,
+  tasks,
+  reports,
+  warehouses,
+  onOpenReportModal,
+  attendanceList,
+  onAddAttendance
+}: DashboardPetugasProps) {
+  const [activeTab, setActiveTab] = useState<'TASKS' | 'REPORTS' | 'ABSENSI'>('TASKS');
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+
+  // Attendance States
+  const [customUserName, setCustomUserName] = useState(currentUser.name);
+  const [customUserEmail, setCustomUserEmail] = useState(currentUser.email);
+  const [selectedLocation, setSelectedLocation] = useState('Gudang A');
+  const [customLocation, setCustomLocation] = useState('');
+  const [attendanceType, setAttendanceType] = useState<'MASUK' | 'KELUAR'>('MASUK');
+  const [photo, setPhoto] = useState('');
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+  const [submittingAttendance, setSubmittingAttendance] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  
+  // Modal for viewing full attendance photo
+  const [selectedAttendancePhoto, setSelectedAttendancePhoto] = useState<string | null>(null);
+
+  const handleDownloadAttendancePDF = (filteredList: Attendance[]) => {
+    try {
+      const doc = new jsPDF();
+      
+      // Page Heading/Header Design
+      doc.setFillColor(18, 19, 26); // Dark theme color matching the app
+      doc.rect(0, 0, 210, 45, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(22);
+      doc.text("GUDANGCLEAN", 14, 18);
+      
+      doc.setFontSize(10);
+      doc.setFont("Helvetica", "normal");
+      doc.setTextColor(161, 161, 170); // zinc-400
+      doc.text(`Riwayat Absensi Mandiri - ${currentUser.name}`, 14, 25);
+      doc.text(`Dicetak pada: ${new Date().toLocaleString('id-ID')}`, 14, 32);
+      
+      // Horizontal Rule
+      doc.setDrawColor(39, 39, 42); // zinc-800
+      doc.line(14, 49, 196, 49);
+      
+      // Subtitle
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(14);
+      doc.setTextColor(30, 41, 59); // deep color
+      doc.text("Riwayat Catatan Kehadiran Pribadi", 14, 58);
+      
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(115, 115, 115);
+      doc.text(`Total Catatan: ${filteredList.length} Entri`, 14, 64);
+      
+      const tableData = filteredList.map((log, index) => {
+        const dateObj = new Date(log.timestamp);
+        const formattedDate = dateObj.toLocaleDateString('id-ID', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric'
+        });
+        return [
+          index + 1,
+          log.userName,
+          log.type,
+          log.location,
+          `${formattedDate} (${log.time} WIB)`,
+          '' // Placeholder for photo
+        ];
+      });
+      
+      autoTable(doc, {
+        startY: 70,
+        head: [['No', 'Nama Petugas', 'Tipe Absen', 'Lokasi Gudang', 'Tanggal & Waktu', 'Foto Selfie']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: {
+          fillColor: [16, 185, 129], // Emerald 500
+          textColor: [255, 255, 255],
+          fontStyle: 'bold'
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252]
+        },
+        styles: {
+          fontSize: 9,
+          cellPadding: 3,
+          valign: 'middle',
+          minCellHeight: 18
+        },
+        columnStyles: {
+          0: { cellWidth: 10, halign: 'center' },
+          2: { fontStyle: 'bold', halign: 'center' },
+          5: { cellWidth: 25, halign: 'center' }
+        },
+        didDrawCell: (data) => {
+          if (data.section === 'body' && data.column.index === 5) {
+            const log = filteredList[data.row.index];
+            const photoUrl = log?.photo;
+            if (photoUrl && photoUrl.startsWith('data:image/')) {
+              try {
+                const padding = 1.5;
+                const imgWidth = data.cell.width - padding * 2;
+                const imgHeight = data.cell.height - padding * 2;
+                const format = photoUrl.includes('image/png') ? 'PNG' : 'JPEG';
+                
+                doc.addImage(
+                  photoUrl,
+                  format,
+                  data.cell.x + padding,
+                  data.cell.y + padding,
+                  imgWidth,
+                  imgHeight
+                );
+              } catch (e) {
+                console.error("Error drawing image in pdf:", e);
+              }
+            }
+          }
+        }
+      });
+      
+      doc.save(`Riwayat_Absen_${currentUser.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`);
+    } catch (error) {
+      console.error("Failed to generate PDF:", error);
+    }
+  };
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
+
+  const startCamera = async () => {
+    setCameraError('');
+    setIsCameraActive(true);
+    setPhoto('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: 640, height: 480 }
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+      }
+    } catch (err: any) {
+      console.error("Camera access failed", err);
+      setCameraError('Gagal mengakses kamera. Silakan pilih unggah foto sebagai alternatif.');
+      setIsCameraActive(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraActive(false);
+  };
+
+  const capturePhoto = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPhoto(dataUrl);
+        stopCamera();
+      }
+    }
+  };
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Format berkas harus berupa gambar.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setPhoto(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleClearPhoto = () => {
+    setPhoto('');
+    stopCamera();
+  };
+
+  const handleSubmitAttendance = async () => {
+    if (!photo) {
+      alert('Silakan ambil foto diri terlebih dahulu.');
+      return;
+    }
+    const finalLocation = selectedLocation === 'Lainnya' ? customLocation : selectedLocation;
+    if (!finalLocation.trim()) {
+      alert('Silakan tentukan lokasi absensi Anda.');
+      return;
+    }
+
+    setSubmittingAttendance(true);
+    try {
+      await onAddAttendance({
+        photo,
+        location: finalLocation,
+        type: attendanceType,
+        customUserName,
+        customUserEmail
+      });
+      // Reset state
+      setPhoto('');
+      setSelectedLocation('Gudang A');
+      setCustomLocation('');
+    } catch (err) {
+      console.error("Failed submitting attendance", err);
+    } finally {
+      setSubmittingAttendance(false);
+    }
+  };
+
+  // Filter attendance list for this user
+  const myAttendance = (attendanceList || [])
+    .filter(a => a.userId === currentUser.id || a.userEmail === currentUser.email)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  // Filter tasks assigned to this cleaner
+  const myTasks = tasks.filter(t => 
+    t.assignedToUserId 
+      ? t.assignedToUserId === currentUser.id 
+      : t.assignedToEmail === currentUser.email
+  );
+  // Filter reports submitted by this cleaner
+  const myReports = reports.filter(r => r.cleanerEmail === currentUser.email)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const getWarehouseName = (id: string) => {
+    const wh = warehouses.find(w => w.id === id);
+    return wh ? `${wh.name} - ${wh.area}` : `Gudang ${id}`;
+  };
+
+  const getStatusColor = (status: Report['status']) => {
+    switch (status) {
+      case 'APPROVED': return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+      case 'REJECTED': return 'bg-rose-500/10 text-rose-400 border border-rose-500/20';
+      default: return 'bg-amber-500/10 text-amber-400 border border-amber-500/20';
+    }
+  };
+
+  const getStatusLabel = (status: Report['status']) => {
+    switch (status) {
+      case 'APPROVED': return 'Disetujui';
+      case 'REJECTED': return 'Ditolak / Revisi';
+      default: return 'Menunggu Verifikasi';
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto px-1 md:px-0 font-sans">
+      
+      {/* Welcome Banner */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="relative overflow-hidden bg-gradient-to-br from-zinc-900/60 to-zinc-950/40 backdrop-blur-md border border-zinc-800/80 rounded-2xl p-6 shadow-xl"
+        id="cleaner-welcome-banner"
+      >
+        <div className="absolute right-0 top-0 translate-x-[15%] translate-y-[-15%] w-72 h-72 rounded-full bg-emerald-500/5 blur-[80px] pointer-events-none" />
+        
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center space-y-4 md:space-y-0 relative z-10">
+          <div>
+            <div className="flex items-center space-x-2 text-emerald-400 mb-2">
+              <Sparkles className="w-4 h-4 animate-pulse" />
+              <span className="text-xs font-bold uppercase tracking-wider">Layanan Kebersihan Aktif</span>
+            </div>
+            <h2 className="text-2xl md:text-3xl font-extrabold font-display text-white tracking-tight">
+              Semangat Bekerja, <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">{currentUser.name}</span>!
+            </h2>
+            <p className="text-xs md:text-sm text-zinc-400 mt-1 max-w-xl">
+              Gudang yang bersih menjamin keselamatan kerja dan kelancaran logistik. Pastikan untuk selalu melampirkan foto sebelum dan sesudah pengerjaan secara detail.
+            </p>
+          </div>
+          
+          <motion.button
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={() => onOpenReportModal()}
+            className="flex items-center space-x-2 py-3 px-5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-sm rounded-xl shadow-lg shadow-emerald-500/10 transition-all outline-none border-none cursor-pointer self-stretch md:self-auto justify-center"
+            id="create-report-btn"
+          >
+            <PlusCircle className="w-4.5 h-4.5" />
+            <span>Buat Laporan Baru</span>
+          </motion.button>
+        </div>
+      </motion.div>
+
+      {/* Metrics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Task Summary Card */}
+        <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex items-center justify-between">
+          <div className="space-y-1">
+            <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Progres Tugas Hari Ini</span>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-extrabold text-white">
+                {myTasks.filter(t => t.status === 'COMPLETED').length} <span className="text-zinc-500 text-lg font-normal">dari</span> {myTasks.length}
+              </span>
+              <span className="text-xs text-emerald-400 font-bold">Tugas Selesai</span>
+            </div>
+            <p className="text-xs text-zinc-400">
+              {myTasks.filter(t => t.status !== 'COMPLETED').length === 0 
+                ? 'Luar biasa! Semua tugas kebersihan hari ini sudah selesai.' 
+                : `${myTasks.filter(t => t.status !== 'COMPLETED').length} tugas lagi perlu Anda selesaikan.`}
+            </p>
+          </div>
+          <div className="w-12 h-12 rounded-full bg-emerald-500/5 text-emerald-400 flex items-center justify-center font-bold text-sm shrink-0 border border-emerald-500/10">
+            {myTasks.length > 0 
+              ? Math.round((myTasks.filter(t => t.status === 'COMPLETED').length / myTasks.length) * 100) 
+              : 100}%
+          </div>
+        </div>
+
+        {/* Verification Status Card */}
+        <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex items-center justify-between">
+          <div className="space-y-1">
+            <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Status Laporan Terkirim</span>
+            <div className="flex items-center space-x-4">
+              <div>
+                <span className="text-2xl font-bold text-white block">{myReports.length}</span>
+                <span className="text-[10px] text-zinc-400 uppercase font-bold">Total Laporan</span>
+              </div>
+              <div className="h-8 w-[1px] bg-zinc-800" />
+              <div>
+                <span className="text-2xl font-bold text-emerald-400 block">
+                  {myReports.filter(r => r.status === 'APPROVED').length}
+                </span>
+                <span className="text-[10px] text-zinc-400 uppercase font-bold">Disetujui</span>
+              </div>
+              <div className="h-8 w-[1px] bg-zinc-800" />
+              <div>
+                <span className="text-2xl font-bold text-amber-400 block">
+                  {myReports.filter(r => r.status === 'PENDING').length}
+                </span>
+                <span className="text-[10px] text-zinc-400 uppercase font-bold">Proses</span>
+              </div>
+            </div>
+          </div>
+          <div className="p-3 bg-zinc-800/20 rounded-xl border border-zinc-800 shrink-0 text-zinc-400">
+            <FileCheck2 className="w-5 h-5" />
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation Tabs */}
+      <div className="border-b border-zinc-900 flex space-x-6">
+        <button
+          onClick={() => setActiveTab('TASKS')}
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 ${
+            activeTab === 'TASKS' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+          }`}
+          id="tab-tasks"
+        >
+          <ClipboardList className="w-4 h-4" />
+          <span>Daftar Tugas Harian ({myTasks.length})</span>
+          {activeTab === 'TASKS' && (
+            <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab('REPORTS')}
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 ${
+            activeTab === 'REPORTS' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+          }`}
+          id="tab-reports"
+        >
+          <FileCheck2 className="w-4 h-4" />
+          <span>Laporan Saya ({myReports.length})</span>
+          {activeTab === 'REPORTS' && (
+            <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab('ABSENSI')}
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 ${
+            activeTab === 'ABSENSI' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+          }`}
+          id="tab-attendance"
+        >
+          <UserCheck className="w-4 h-4" />
+          <span>Absensi Saya</span>
+          {activeTab === 'ABSENSI' && (
+            <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+          )}
+        </button>
+      </div>
+
+      {/* Main Tab Content */}
+      <AnimatePresence mode="wait">
+        {activeTab === 'TASKS' && (
+          <motion.div
+            key="tasks-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="space-y-4"
+          >
+            {myTasks.length === 0 ? (
+              <div className="p-12 text-center bg-zinc-900/10 rounded-2xl border border-zinc-900 border-dashed">
+                <CheckCircle2 className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+                <h4 className="font-bold text-white mb-1">Semua Tugas Selesai!</h4>
+                <p className="text-xs text-zinc-400 max-w-sm mx-auto">
+                  Anda tidak memiliki tugas tertulis yang ditugaskan hari ini. Anda tetap dapat mengirimkan laporan kebersihan mandiri melalui tombol "Buat Laporan Baru".
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {myTasks.map((task) => {
+                  const isCompleted = task.status === 'COMPLETED';
+                  return (
+                    <motion.div
+                      key={task.id}
+                      whileHover={{ y: -2 }}
+                      className={`p-5 rounded-xl border transition-all flex flex-col justify-between ${
+                        isCompleted
+                          ? 'bg-emerald-950/15 border-emerald-900/20'
+                          : 'bg-zinc-900/30 border-zinc-900'
+                      }`}
+                      id={`task-card-${task.id}`}
+                    >
+                      <div>
+                        <div className="flex justify-between items-start mb-3">
+                          <div className="flex items-center space-x-2">
+                            <span className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-center text-xs font-black text-emerald-400">
+                              {task.warehouse}
+                            </span>
+                            <div>
+                              <h4 className="text-sm font-bold text-zinc-100">{task.taskName}</h4>
+                              <span className="text-[10px] text-zinc-500 font-medium">
+                                {getWarehouseName(task.warehouse)}
+                              </span>
+                            </div>
+                          </div>
+                          <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                            isCompleted
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'
+                          }`}>
+                            {isCompleted ? 'Selesai' : 'Perlu Dikerjakan'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-300 leading-relaxed pl-10 mb-4">
+                          {task.description}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-between border-t border-zinc-850/60 pt-3 pl-10 mt-2">
+                        <div className="flex items-center space-x-1.5 text-zinc-500 text-[10px] font-medium font-mono">
+                          <CalendarDays className="w-3.5 h-3.5" />
+                          <span>Hari Ini</span>
+                        </div>
+                        
+                        {!isCompleted ? (
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={() => onOpenReportModal(task.warehouse)}
+                            className="flex items-center space-x-1.5 py-1.5 px-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs rounded-lg transition-all cursor-pointer border-none"
+                            id={`report-task-${task.id}`}
+                          >
+                            <span>Kerjakan & Lapor</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </motion.button>
+                        ) : (
+                          <span className="flex items-center space-x-1 text-xs text-emerald-400 font-bold">
+                            <Check className="w-4 h-4" />
+                            <span>Tugas Selesai</span>
+                          </span>
+                        )}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {activeTab === 'REPORTS' && (
+          <motion.div
+            key="reports-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="space-y-4"
+          >
+            {myReports.length === 0 ? (
+              <div className="p-12 text-center bg-zinc-900/10 rounded-2xl border border-zinc-900 border-dashed">
+                <FileCheck2 className="w-12 h-12 text-zinc-750 mx-auto mb-3" />
+                <h4 className="font-bold text-white mb-1">Belum Ada Laporan</h4>
+                <p className="text-xs text-zinc-400 max-w-sm mx-auto">
+                  Anda belum mengirimkan laporan kebersihan hari ini. Silakan klik tombol "Buat Laporan Baru" di atas untuk mengirimkan laporan pertama Anda.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {myReports.map((report) => (
+                  <div
+                    key={report.id}
+                    className="p-4 bg-zinc-900/30 border border-zinc-900 hover:border-zinc-800 rounded-xl transition-all flex flex-col md:flex-row justify-between items-start md:items-center space-y-4 md:space-y-0"
+                    id={`report-item-${report.id}`}
+                  >
+                    <div className="flex items-start space-x-4">
+                      {/* Before / After Mini previews */}
+                      <div className="flex -space-x-4 hover:space-x-1 transition-all shrink-0">
+                        <div className="relative group/img cursor-pointer" onClick={() => setSelectedReport(report)}>
+                          <img
+                            src={report.photoBefore}
+                            alt="Sebelum"
+                            className="w-14 h-14 rounded-lg object-cover border-2 border-zinc-900 shadow-md"
+                            referrerPolicy="no-referrer"
+                          />
+                          <span className="absolute bottom-0 right-0 bg-rose-600 text-[7px] text-white font-extrabold px-1 rounded">SEBELUM</span>
+                        </div>
+                        <div className="relative group/img cursor-pointer" onClick={() => setSelectedReport(report)}>
+                          <img
+                            src={report.photoAfter}
+                            alt="Sesudah"
+                            className="w-14 h-14 rounded-lg object-cover border-2 border-zinc-900 shadow-md"
+                            referrerPolicy="no-referrer"
+                          />
+                          <span className="absolute bottom-0 right-0 bg-emerald-600 text-[7px] text-white font-extrabold px-1 rounded">SESUDAH</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <span className="bg-zinc-800 text-white font-extrabold text-[11px] px-2 py-0.5 rounded-md border border-zinc-700">
+                            Gudang {report.warehouse}
+                          </span>
+                          <span className="text-[10px] text-zinc-500 font-medium font-mono">
+                            {new Date(report.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-300 font-medium mt-1.5 max-w-lg line-clamp-1">
+                          {report.description}
+                        </p>
+                        
+                        {/* Display feedback if any */}
+                        {report.feedback && (
+                          <div className="flex items-start space-x-1.5 mt-2 text-[11px] text-emerald-400 bg-emerald-500/5 px-2 py-1 rounded-md border border-emerald-500/10">
+                            <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span><strong>Catatan Kepala:</strong> "{report.feedback}"</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-3 w-full md:w-auto justify-between md:justify-end border-t border-zinc-850/40 md:border-none pt-3 md:pt-0">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${getStatusColor(report.status)}`}>
+                        {getStatusLabel(report.status)}
+                      </span>
+                      
+                      <button
+                        onClick={() => setSelectedReport(report)}
+                        className="p-1.5 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-200 rounded-lg transition-colors cursor-pointer"
+                        title="Lihat Detail Laporan"
+                        id={`view-report-detail-${report.id}`}
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {activeTab === 'ABSENSI' && (
+          <motion.div
+            key="attendance-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="space-y-6"
+          >
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Absen Form */}
+              <div className="lg:col-span-5 bg-zinc-900/30 border border-zinc-900 rounded-2xl p-6 flex flex-col space-y-5">
+                <div className="border-b border-zinc-800 pb-4">
+                  <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider block font-mono">Fitur Absensi</span>
+                  <h3 className="text-lg font-bold text-white mt-1">Absensi Petugas & Tim</h3>
+                  
+                  {/* Digital Clock Widget */}
+                  <div className="mt-3 flex items-center space-x-2 bg-emerald-500/5 border border-emerald-500/10 rounded-xl px-4 py-2.5">
+                    <Clock className="w-5 h-5 text-emerald-400 animate-pulse shrink-0" />
+                    <div>
+                      <span className="text-zinc-500 text-[9px] uppercase tracking-wider block font-bold font-mono">Waktu Sekarang</span>
+                      <span className="text-xs font-mono font-bold text-zinc-300 tracking-wide block mt-0.5">
+                        {currentTime.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} &bull; {currentTime.toLocaleTimeString('id-ID', { hour12: false })} WIB
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Nama Petugas Input */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block font-mono">Nama Petugas yang Absen</label>
+                  <input
+                    type="text"
+                    value={customUserName}
+                    onChange={(e) => {
+                      setCustomUserName(e.target.value);
+                      const sanitized = e.target.value.toLowerCase().replace(/\s+/g, '.');
+                      setCustomUserEmail(`${sanitized || 'user'}@gudang.com`);
+                    }}
+                    placeholder="Masukkan nama lengkap petugas..."
+                    className="w-full bg-zinc-950/80 border border-zinc-800 focus:border-emerald-500 rounded-xl px-4 py-3 text-xs text-zinc-200 outline-none transition-all font-medium"
+                    required
+                  />
+                </div>
+
+                {/* Absen Type (MASUK / KELUAR) */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block font-mono">Tipe Absensi</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setAttendanceType('MASUK')}
+                      className={`py-3 px-4 rounded-xl border font-bold text-xs flex items-center justify-center space-x-2 cursor-pointer transition-all ${
+                        attendanceType === 'MASUK'
+                          ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-lg shadow-emerald-500/5'
+                          : 'bg-zinc-900/40 border-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-800'
+                      }`}
+                    >
+                      <UserCheck className="w-4 h-4" />
+                      <span>Masuk Kerja</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAttendanceType('KELUAR')}
+                      className={`py-3 px-4 rounded-xl border font-bold text-xs flex items-center justify-center space-x-2 cursor-pointer transition-all ${
+                        attendanceType === 'KELUAR'
+                          ? 'bg-rose-500/10 border-rose-500 text-rose-400 shadow-lg shadow-rose-500/5'
+                          : 'bg-zinc-900/40 border-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-800'
+                      }`}
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Pulang Kerja</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Location Picker */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block font-mono">Lokasi Anda</label>
+                  <div className="flex space-x-2">
+                    <div className="p-3 bg-zinc-900/80 rounded-xl border border-zinc-800 text-zinc-400 shrink-0">
+                      <MapPin className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <select
+                      value={selectedLocation}
+                      onChange={(e) => setSelectedLocation(e.target.value)}
+                      className="flex-1 bg-zinc-900/80 border border-zinc-800 rounded-xl px-4 py-3 text-xs text-zinc-200 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/20 transition-all font-medium"
+                    >
+                      {warehouses.map((wh) => (
+                        <option key={wh.id} value={`Gudang ${wh.id}`}>
+                          Gudang {wh.id} - {wh.name}
+                        </option>
+                      ))}
+                      <option value="Kantor Utama">Kantor Utama / Staff Area</option>
+                      <option value="Gudang Utama">Gudang Utama (Logistik)</option>
+                      <option value="Lainnya">Lainnya (Tulis Lokasi)</option>
+                    </select>
+                  </div>
+                  
+                  {selectedLocation === 'Lainnya' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="pt-1.5"
+                    >
+                      <input
+                        type="text"
+                        value={customLocation}
+                        onChange={(e) => setCustomLocation(e.target.value)}
+                        placeholder="Masukkan nama lokasi detail..."
+                        className="w-full bg-zinc-900/80 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs text-zinc-200 outline-none focus:border-emerald-500 transition-all font-medium"
+                      />
+                    </motion.div>
+                  )}
+                </div>
+
+                {/* Camera / Foto Diri panel */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block font-mono">Foto Diri di Lokasi (Selfie)</label>
+                  
+                  {!photo && !isCameraActive && (
+                    <div className="border border-zinc-800 border-dashed rounded-xl p-6 text-center bg-zinc-950/20">
+                      <Camera className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                      <p className="text-xs text-zinc-400 font-medium mb-4">Pilih metode pengambilan foto diri Anda</p>
+                      
+                      <div className="flex flex-col sm:flex-row gap-2 justify-center">
+                        <button
+                          type="button"
+                          onClick={startCamera}
+                          className="py-2 px-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs rounded-lg flex items-center justify-center space-x-1.5 cursor-pointer transition-all border-none"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Ambil dari Kamera</span>
+                        </button>
+                        <label className="py-2 px-3.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs rounded-lg flex items-center justify-center space-x-1.5 cursor-pointer transition-all border border-zinc-750">
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Unggah Foto</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handlePhotoUpload}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                  {isCameraActive && (
+                    <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-black border border-zinc-800">
+                      <video
+                        ref={videoRef}
+                        className="w-full h-full object-cover scale-x-[-1]"
+                        playsInline
+                        muted
+                      />
+                      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex space-x-2">
+                        <button
+                          type="button"
+                          onClick={capturePhoto}
+                          className="py-2 px-4 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs rounded-lg flex items-center space-x-1.5 shadow-lg border-none cursor-pointer"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Ambil Foto</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={stopCamera}
+                          className="py-2 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs rounded-lg border-none cursor-pointer"
+                        >
+                          Batal
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {photo && (
+                    <div className="relative aspect-[4/3] rounded-xl overflow-hidden border border-zinc-800">
+                      <img
+                        src={photo}
+                        alt="Foto Absen"
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleClearPhoto}
+                        className="absolute top-2 right-2 p-1.5 bg-zinc-950/80 text-zinc-300 hover:text-white rounded-lg transition-colors cursor-pointer"
+                        title="Hapus foto"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                      <div className="absolute bottom-2 left-2 bg-zinc-950/80 px-2 py-0.5 rounded text-[8px] font-mono tracking-wider text-zinc-400 uppercase">
+                        Pratinjau Foto Selfie
+                      </div>
+                    </div>
+                  )}
+
+                  {cameraError && (
+                    <p className="text-[10px] text-rose-400 font-medium pl-1">{cameraError}</p>
+                  )}
+                </div>
+
+                {/* Submit Button */}
+                <button
+                  type="button"
+                  disabled={submittingAttendance || !photo}
+                  onClick={handleSubmitAttendance}
+                  className={`w-full py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-center space-x-2 transition-all border-none ${
+                    photo && !submittingAttendance
+                      ? 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950 cursor-pointer shadow-lg shadow-emerald-500/10'
+                      : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  {submittingAttendance ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Menyimpan Absensi...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Kirim Absensi ({attendanceType})</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Attendance History */}
+              <div className="lg:col-span-7 bg-zinc-900/10 border border-zinc-900/60 rounded-2xl p-6 flex flex-col space-y-4">
+                <div>
+                  <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider block font-mono">Riwayat Kehadiran</span>
+                  <h3 className="text-base font-bold text-white mt-0.5">Buku Riwayat Absen Mandiri</h3>
+                </div>
+
+                {myAttendance.length === 0 ? (
+                  <div className="p-12 text-center bg-zinc-900/10 rounded-2xl border border-zinc-900 border-dashed my-auto">
+                    <UserCheck className="w-10 h-10 text-zinc-750 mx-auto mb-3" />
+                    <h4 className="font-bold text-zinc-300 text-sm mb-1">Belum Ada Riwayat Absensi</h4>
+                    <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                      Anda belum mencatatkan absensi masuk atau pulang hari ini. Lakukan absensi pertama Anda di panel sebelah kiri.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Action Bar */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 bg-zinc-900/10 border border-zinc-900 rounded-xl p-3.5">
+                      <div className="text-[11px] font-medium text-zinc-400">
+                        Total Catatan Absensi: <span className="text-white font-bold font-mono">{myAttendance.length}</span>
+                      </div>
+                      
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* Download PDF Button */}
+                        <button
+                          onClick={() => handleDownloadAttendancePDF(myAttendance)}
+                          className="flex items-center space-x-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white border border-emerald-500/20 rounded-lg px-3 py-1.5 text-[10px] font-semibold transition-all cursor-pointer shadow-md"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Unduh Buku Absen (PDF)</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="w-full overflow-hidden border border-zinc-900 rounded-xl bg-zinc-950/20">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-zinc-900 bg-zinc-900/40 text-[9px] font-black uppercase tracking-wider text-zinc-500 font-mono">
+                              <th className="py-3 px-3 text-center w-10">No</th>
+                              <th className="py-3 px-3">Petugas</th>
+                              <th className="py-3 px-3 text-center">Tipe</th>
+                              <th className="py-3 px-3">Lokasi</th>
+                              <th className="py-3 px-3">Tanggal & Waktu</th>
+                              <th className="py-3 px-3 text-center w-20">Selfie</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-900/60 text-xs">
+                            {myAttendance.map((log, index) => {
+                              const isMasuk = log.type === 'MASUK';
+                              const dateObj = new Date(log.timestamp);
+                              const formattedDate = dateObj.toLocaleDateString('id-ID', {
+                                day: 'numeric',
+                                month: 'short',
+                                year: 'numeric'
+                              });
+
+                              return (
+                                <tr
+                                  key={log.id}
+                                  className="hover:bg-zinc-900/20 transition-all group"
+                                >
+                                  <td className="py-3 px-3 text-center font-mono font-bold text-zinc-650">
+                                    {index + 1}
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div>
+                                      <span className="font-bold text-zinc-200 block">
+                                        {log.userName}
+                                      </span>
+                                      <span className="text-[9px] text-zinc-500 font-mono block mt-0.5">
+                                        {log.userEmail}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3 text-center">
+                                    <span className={`inline-block text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded ${
+                                      isMasuk
+                                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/10'
+                                        : 'bg-rose-500/10 text-rose-400 border border-rose-500/10'
+                                    }`}>
+                                      {isMasuk ? 'MASUK' : 'KELUAR'}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div className="flex items-center space-x-1.5 text-zinc-300 font-medium">
+                                      <MapPin className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                      <span>{log.location}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div>
+                                      <span className="text-zinc-300 font-semibold block">{formattedDate}</span>
+                                      <span className="text-[9px] text-zinc-500 font-mono block mt-0.5">{log.time} WIB</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3 text-center">
+                                    <div className="flex justify-center">
+                                      <div
+                                        onClick={() => setSelectedAttendancePhoto(log.photo)}
+                                        className="relative w-10 h-8 rounded overflow-hidden border border-zinc-900 cursor-pointer group/att-pic shrink-0"
+                                      >
+                                        <img
+                                          src={log.photo}
+                                          alt={`Selfie ${log.userName}`}
+                                          className="w-full h-full object-cover transition-transform duration-300 group-hover/att-pic:scale-110"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/att-pic:opacity-100 flex items-center justify-center transition-all">
+                                          <Eye className="w-3 h-3 text-white" />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Lightbox / Details Modal for Cleaner's own reports */}
+      <AnimatePresence>
+        {selectedReport && (
+          <div className="fixed inset-0 z-110 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedReport(null)}
+              className="absolute inset-0 bg-zinc-950/80 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-xl bg-[#12131a] border border-zinc-800 rounded-2xl shadow-2xl p-6 z-10 flex flex-col max-h-[90vh] overflow-y-auto"
+              id="report-detail-lightbox"
+            >
+              <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+                <div>
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Detail Laporan</span>
+                  <h3 className="font-bold text-white text-base">Gudang {selectedReport.warehouse}</h3>
+                </div>
+                <button
+                  onClick={() => setSelectedReport(null)}
+                  className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {/* Side by side Before and After Images */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <span className="block text-[10px] font-bold text-rose-400 uppercase tracking-wider mb-1">Sebelum</span>
+                    <div className="aspect-[4/3] rounded-xl overflow-hidden border border-rose-950/30">
+                      <img
+                        src={selectedReport.photoBefore}
+                        alt="Sebelum"
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] font-bold text-emerald-400 uppercase tracking-wider mb-1">Sesudah</span>
+                    <div className="aspect-[4/3] rounded-xl overflow-hidden border border-emerald-950/30">
+                      <img
+                        src={selectedReport.photoAfter}
+                        alt="Sesudah"
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-zinc-950/60 rounded-xl border border-zinc-800 space-y-2 text-xs">
+                  <div>
+                    <span className="text-zinc-500 font-semibold uppercase text-[9px] tracking-wider block">Keterangan Pekerjaan</span>
+                    <span className="text-zinc-200 font-medium leading-relaxed block mt-0.5">{selectedReport.description}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-800/50">
+                    <div>
+                      <span className="text-zinc-500 font-semibold uppercase text-[9px] tracking-wider block">Waktu Pengiriman</span>
+                      <span className="text-zinc-300 font-mono text-[10px]">
+                        {new Date(selectedReport.timestamp).toLocaleString('id-ID')} WIB
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500 font-semibold uppercase text-[9px] tracking-wider block">Status Verifikasi</span>
+                      <span className={`inline-block font-bold text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded mt-0.5 ${getStatusColor(selectedReport.status)}`}>
+                        {getStatusLabel(selectedReport.status)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {selectedReport.feedback && (
+                  <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl">
+                    <span className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider block mb-1">Tanggapan Kepala Gudang</span>
+                    <p className="text-xs text-zinc-300 italic leading-relaxed">
+                      "{selectedReport.feedback}"
+                    </p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Lightbox Modal for Attendance selfie photo */}
+      <AnimatePresence>
+        {selectedAttendancePhoto && (
+          <div className="fixed inset-0 z-110 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedAttendancePhoto(null)}
+              className="absolute inset-0 bg-zinc-950/90 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-lg bg-[#12131a] border border-zinc-800 rounded-2xl shadow-2xl p-4 z-10 flex flex-col"
+            >
+              <div className="flex items-center justify-between mb-2 pb-2 border-b border-zinc-800">
+                <span className="text-xs font-bold text-zinc-400">Foto Selfie Absensi</span>
+                <button
+                  onClick={() => setSelectedAttendancePhoto(null)}
+                  className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="rounded-xl overflow-hidden aspect-[4/3] border border-zinc-800">
+                <img
+                  src={selectedAttendancePhoto}
+                  alt="Selfie Absen"
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}
