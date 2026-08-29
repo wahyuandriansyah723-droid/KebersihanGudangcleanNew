@@ -310,52 +310,63 @@ export default function DashboardPetugas({
     }
   };
 
-  // Robust helper to check if report belongs strictly to the currently logged in cleaner account
+  // Robust helper to check if report belongs strictly to the currently logged in cleaner by account Name
   const isMyReport = (report: Report) => {
-    const curEmail = (currentUser.email || '').trim().toLowerCase();
     const curName = (currentUser.name || '').trim().toLowerCase();
-    const curId = (currentUser.id || '').trim().toLowerCase();
-
-    const rEmail = (report.cleanerEmail || '').trim().toLowerCase();
     const rName = (report.cleanerName || '').trim().toLowerCase();
 
-    if (curEmail && rEmail && curEmail === rEmail) return true;
-    if (curName && rName && curName === rName) return true;
-    if (curId && (rEmail === curId || rName === curId)) return true;
+    // 1. Primary check: Strict match on cleaner's account name
+    if (curName && rName) {
+      if (curName === rName || curName.includes(rName) || rName.includes(curName)) {
+        return true;
+      }
+    }
+
+    // 2. Fallback only if report cleanerName is blank
+    if (!rName) {
+      const curEmail = (currentUser.email || '').trim().toLowerCase();
+      const rEmail = (report.cleanerEmail || '').trim().toLowerCase();
+      if (curEmail && rEmail && curEmail === rEmail) return true;
+    }
+
     return false;
   };
 
-  // Robust helper to check if task is assigned specifically to this cleaner
+  // Robust helper to check if task is assigned specifically to this cleaner by account Name
   const isMyTask = (t: Task) => {
-    const curEmail = (currentUser.email || '').trim().toLowerCase();
     const curName = (currentUser.name || '').trim().toLowerCase();
-    const curId = (currentUser.id || '').trim().toLowerCase();
-
-    const tEmail = (t.assignedToEmail || '').trim().toLowerCase();
     const tName = (t.assignedToName || '').trim().toLowerCase();
-    const tUserId = (t.assignedToUserId || '').trim().toLowerCase();
 
-    if (tUserId && curId && tUserId === curId) return true;
-    if (tEmail && curEmail && tEmail === curEmail) return true;
-    if (tName && curName && tName === curName) return true;
+    if (curName && tName) {
+      if (curName === tName || curName.includes(tName) || tName.includes(curName)) {
+        return true;
+      }
+    }
+
+    const curId = (currentUser.id || '').trim().toLowerCase();
+    const tUserId = (t.assignedToUserId || '').trim().toLowerCase();
+    if (curId && tUserId && curId === tUserId) return true;
+
     return false;
   };
 
-  // Filter attendance list for this user
+  // Filter attendance list for this user by account Name
   const myAttendance = useMemo(() => {
     return (attendanceList || [])
       .filter(a => {
-        const curEmail = (currentUser.email || '').trim().toLowerCase();
         const curName = (currentUser.name || '').trim().toLowerCase();
-        const curId = (currentUser.id || '').trim().toLowerCase();
-
-        const aEmail = (a.userEmail || '').trim().toLowerCase();
         const aName = (a.userName || '').trim().toLowerCase();
-        const aUserId = (a.userId || '').trim().toLowerCase();
 
-        if (aUserId && curId && aUserId === curId) return true;
-        if (aEmail && curEmail && aEmail === curEmail) return true;
-        if (aName && curName && aName === curName) return true;
+        if (curName && aName) {
+          if (curName === aName || curName.includes(aName) || aName.includes(curName)) {
+            return true;
+          }
+        }
+
+        const curId = (currentUser.id || '').trim().toLowerCase();
+        const aUserId = (a.userId || '').trim().toLowerCase();
+        if (curId && aUserId && curId === aUserId) return true;
+
         return false;
       })
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -762,9 +773,9 @@ export default function DashboardPetugas({
                       </span>
                     </div>
                     <p className="text-xs text-zinc-400 flex items-center space-x-1.5 mt-0.5">
-                      <span className="font-mono text-zinc-400">{currentUser.email}</span>
+                      <span className="font-bold text-zinc-200">{currentUser.name}</span>
                       <span className="text-zinc-600">•</span>
-                      <span className="text-emerald-400 font-medium">Hanya menampilkan laporan dari akun Anda</span>
+                      <span className="text-emerald-400 font-medium">Menampilkan laporan khusus atas nama akun Anda</span>
                     </p>
                   </div>
                 </div>

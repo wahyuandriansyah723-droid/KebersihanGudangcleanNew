@@ -438,53 +438,46 @@ export default function DashboardKepala({
   const cleanersList = useMemo(() => {
     const map = new Map<string, { id: string; name: string; email: string; avatarUrl?: string }>();
     
-    // 1. Users with role PETUGAS_KEBERSIHAN
+    // 1. Users with role PETUGAS_KEBERSIHAN indexed by Name
     users.forEach(u => {
-      if (u.role === 'PETUGAS_KEBERSIHAN') {
-        const key = (u.email || u.id || u.name).trim().toLowerCase();
-        map.set(key, {
-          id: u.id,
-          name: u.name || 'Petugas',
-          email: u.email || '',
-          avatarUrl: u.avatarUrl
-        });
+      if (u.role === 'PETUGAS_KEBERSIHAN' && u.name) {
+        const nameKey = u.name.trim().toLowerCase();
+        if (!map.has(nameKey)) {
+          map.set(nameKey, {
+            id: u.id,
+            name: u.name.trim(),
+            email: u.email || '',
+            avatarUrl: u.avatarUrl
+          });
+        }
       }
     });
 
-    // 2. Incorporate any cleaner in reports
+    // 2. Incorporate any cleaner in reports indexed by cleanerName
     reports.forEach(r => {
-      const emailKey = (r.cleanerEmail || '').trim().toLowerCase();
-      const nameKey = (r.cleanerName || '').trim().toLowerCase();
-      if (emailKey && !map.has(emailKey)) {
-        const existingByName = Array.from(map.values()).find(c => c.name.toLowerCase() === nameKey);
-        if (!existingByName) {
-          map.set(emailKey, {
-            id: r.cleanerEmail || r.cleanerName,
-            name: r.cleanerName || r.cleanerEmail || 'Petugas Kebersihan',
+      const name = (r.cleanerName || '').trim();
+      if (name) {
+        const nameKey = name.toLowerCase();
+        if (!map.has(nameKey)) {
+          map.set(nameKey, {
+            id: r.cleanerName,
+            name: name,
             email: r.cleanerEmail || '',
             avatarUrl: undefined
           });
         }
-      } else if (nameKey && !Array.from(map.values()).some(c => c.name.toLowerCase() === nameKey)) {
-        map.set(nameKey, {
-          id: r.cleanerName,
-          name: r.cleanerName,
-          email: r.cleanerEmail || '',
-          avatarUrl: undefined
-        });
       }
     });
 
-    // 3. Incorporate any cleaner in tasks
+    // 3. Incorporate any cleaner in tasks indexed by assignedToName
     tasks.forEach(t => {
-      const emailKey = (t.assignedToEmail || '').trim().toLowerCase();
-      const nameKey = (t.assignedToName || '').trim().toLowerCase();
-      if (emailKey && !map.has(emailKey)) {
-        const existingByName = Array.from(map.values()).find(c => c.name.toLowerCase() === nameKey);
-        if (!existingByName) {
-          map.set(emailKey, {
-            id: t.assignedToUserId || t.assignedToEmail || t.assignedToName,
-            name: t.assignedToName || t.assignedToEmail || 'Petugas',
+      const name = (t.assignedToName || '').trim();
+      if (name) {
+        const nameKey = name.toLowerCase();
+        if (!map.has(nameKey)) {
+          map.set(nameKey, {
+            id: t.assignedToUserId || name,
+            name: name,
             email: t.assignedToEmail || '',
             avatarUrl: undefined
           });
@@ -500,9 +493,10 @@ export default function DashboardKepala({
     if (cleanerFilter === 'ALL') return null;
     const target = cleanerFilter.trim().toLowerCase();
     return cleanersList.find(c => 
+      c.name.toLowerCase() === target ||
+      c.name.toLowerCase().includes(target) ||
       c.id.toLowerCase() === target || 
-      c.email.toLowerCase() === target || 
-      c.name.toLowerCase() === target
+      c.email.toLowerCase() === target
     ) || {
       id: cleanerFilter,
       name: cleanerFilter,
@@ -511,21 +505,17 @@ export default function DashboardKepala({
     };
   }, [cleanerFilter, cleanersList]);
 
-  // Cleaner matching helper
-  const isCleanerMatch = (reportCleanerName?: string, reportCleanerEmail?: string) => {
+  // Cleaner matching helper - based strictly on cleaner's account name
+  const isCleanerMatch = (reportCleanerName?: string, _reportCleanerEmail?: string) => {
     if (cleanerFilter === 'ALL') return true;
     if (!selectedCleanerObj) return true;
 
-    const selEmail = selectedCleanerObj.email.trim().toLowerCase();
     const selName = selectedCleanerObj.name.trim().toLowerCase();
-    const selId = selectedCleanerObj.id.trim().toLowerCase();
-
-    const rEmail = (reportCleanerEmail || '').trim().toLowerCase();
     const rName = (reportCleanerName || '').trim().toLowerCase();
 
-    if (selEmail && rEmail && (rEmail === selEmail || rEmail.includes(selEmail) || selEmail.includes(rEmail))) return true;
-    if (selName && rName && (rName === selName || rName.includes(selName) || selName.includes(rName))) return true;
-    if (selId && (rEmail === selId || rName === selId)) return true;
+    if (selName && rName) {
+      return rName === selName || rName.includes(selName) || selName.includes(rName);
+    }
 
     return false;
   };
@@ -605,14 +595,12 @@ export default function DashboardKepala({
   // Cleaner summaries for the Sub-Tab
   const cleanerSummaries = useMemo(() => {
     return cleanersList.map(cleaner => {
-      const selEmail = cleaner.email.trim().toLowerCase();
       const selName = cleaner.name.trim().toLowerCase();
+      const selEmail = cleaner.email.trim().toLowerCase();
 
       const cleanerReports = reports.filter(r => {
-        const rEmail = (r.cleanerEmail || '').trim().toLowerCase();
         const rName = (r.cleanerName || '').trim().toLowerCase();
-        const isMatch = (selEmail && (rEmail === selEmail || rEmail.includes(selEmail))) ||
-                        (selName && (rName === selName || rName.includes(selName)));
+        const isMatch = selName && (rName === selName || rName.includes(selName) || selName.includes(rName));
         return isMatch && getIsReportInDateFilter(r.timestamp) && (warehouseFilter === 'ALL' || r.warehouse === warehouseFilter);
       });
 
@@ -625,9 +613,9 @@ export default function DashboardKepala({
       let attendanceTime: string | null = null;
       if (isSingleDateMode && effectiveSingleDateStr) {
         const att = attendanceList.filter(a => {
-          const aEmail = (a.userEmail || '').trim().toLowerCase();
-          const aId = (a.userId || '').trim().toLowerCase();
-          return (aEmail === selEmail || aId === cleaner.id.toLowerCase()) && a.date === effectiveSingleDateStr;
+          const aName = (a.userName || '').trim().toLowerCase();
+          const isAttMatch = selName && (aName === selName || aName.includes(selName) || selName.includes(aName));
+          return isAttMatch && a.date === effectiveSingleDateStr;
         }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
         if (att.some(a => a.type === 'KELUAR')) {
@@ -641,10 +629,8 @@ export default function DashboardKepala({
 
       // Cleaner's assigned tasks
       const cleanerAssignedTasks = tasks.filter(t => {
-        const tEmail = (t.assignedToEmail || '').trim().toLowerCase();
         const tName = (t.assignedToName || '').trim().toLowerCase();
-        return (selEmail && (tEmail === selEmail || tEmail.includes(selEmail))) ||
-               (selName && (tName === selName || tName.includes(selName)));
+        return selName && (tName === selName || tName.includes(selName) || selName.includes(tName));
       });
 
       return {
@@ -1348,23 +1334,20 @@ export default function DashboardKepala({
 
                         {/* Individual Cleaner Pills */}
                         {cleanersList.map((cleaner) => {
-                          const isSelected = 
-                            cleanerFilter.toLowerCase() === cleaner.email.toLowerCase() || 
-                            cleanerFilter.toLowerCase() === cleaner.name.toLowerCase() ||
-                            cleanerFilter.toLowerCase() === cleaner.id.toLowerCase();
+                          const isSelected = cleanerFilter.toLowerCase() === cleaner.name.toLowerCase();
                           
-                          // Count reports on current date filter for this cleaner
+                          // Count reports on current date filter for this cleaner by Name
                           const cleanerReportsCount = reports.filter(r => 
-                            (r.cleanerEmail?.toLowerCase() === cleaner.email.toLowerCase() || r.cleanerName?.toLowerCase() === cleaner.name.toLowerCase()) &&
+                            r.cleanerName?.toLowerCase() === cleaner.name.toLowerCase() &&
                             getIsReportInDateFilter(r.timestamp)
                           ).length;
 
                           return (
                             <button
-                              key={cleaner.id || cleaner.email || cleaner.name}
+                              key={cleaner.name}
                               type="button"
                               onClick={() => {
-                                setCleanerFilter(isSelected ? 'ALL' : (cleaner.email || cleaner.name));
+                                setCleanerFilter(isSelected ? 'ALL' : cleaner.name);
                               }}
                               className={`px-2.5 py-1 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center space-x-2 cursor-pointer shrink-0 ${
                                 isSelected
@@ -1431,7 +1414,7 @@ export default function DashboardKepala({
                         >
                           <option value="ALL">Semua Petugas ({cleanersList.length})</option>
                           {cleanersList.map((cleaner) => (
-                            <option key={cleaner.id || cleaner.email} value={cleaner.email || cleaner.name}>
+                            <option key={cleaner.name} value={cleaner.name}>
                               {cleaner.name}
                             </option>
                           ))}
@@ -1496,19 +1479,21 @@ export default function DashboardKepala({
                                   Petugas Terpilih
                                 </span>
                               </div>
-                              <span className="text-xs text-zinc-400 font-mono block">
-                                {selectedCleanerObj.email || 'Email tidak terdata'}
+                              <span className="text-xs text-zinc-400 font-medium block">
+                                Petugas Kebersihan Gudang
                               </span>
                             </div>
                           </div>
 
                           <div className="flex items-center space-x-2">
-                            {/* Attendance badge for this cleaner */}
+                            {/* Attendance badge for this cleaner by Name */}
                             {(() => {
-                              const attToday = attendanceList.filter(a => 
-                                (a.userEmail?.toLowerCase() === selectedCleanerObj.email.toLowerCase() || a.userId?.toLowerCase() === selectedCleanerObj.id.toLowerCase()) &&
-                                a.date === (effectiveSingleDateStr || todayStr)
-                              ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+                              const selName = selectedCleanerObj.name.toLowerCase();
+                              const attToday = attendanceList.filter(a => {
+                                const aName = (a.userName || '').toLowerCase();
+                                const isMatch = aName === selName || aName.includes(selName) || selName.includes(aName);
+                                return isMatch && a.date === (effectiveSingleDateStr || todayStr);
+                              }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
                               const hasKeluar = attToday.some(a => a.type === 'KELUAR');
                               const hasMasuk = attToday.some(a => a.type === 'MASUK');
