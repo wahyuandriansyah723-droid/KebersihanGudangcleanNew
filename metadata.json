@@ -2,7 +2,8 @@
   "name": "Remix Remix: GudangClean",
   "description": "Sistem manajemen & audit kebersihan Gudang A-L dengan lembar pengesahan, tanda tangan digital (TTD), dan ekspor PDF resmi.",
   "requestFramePermissions": [
-    "camera"
+    "camera",
+    "geolocation"
   ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

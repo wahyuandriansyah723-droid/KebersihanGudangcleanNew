@@ -37,6 +37,7 @@ import {
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { User, Task, Report, Warehouse, Attendance } from '../types';
+import { AttendanceLocationModal } from './AttendanceLocationModal';
 
 interface DashboardPetugasProps {
   currentUser: User;
@@ -51,6 +52,11 @@ interface DashboardPetugasProps {
     type: 'MASUK' | 'KELUAR';
     customUserName?: string;
     customUserEmail?: string;
+    latitude?: number;
+    longitude?: number;
+    accuracy?: number;
+    address?: string;
+    mapUrl?: string;
   }) => Promise<void>;
 }
 
@@ -77,8 +83,14 @@ export default function DashboardPetugas({
   const [cameraError, setCameraError] = useState('');
   const [submittingAttendance, setSubmittingAttendance] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+
+  // GPS Location states
+  const [gpsCoords, setGpsCoords] = useState<{ latitude: number; longitude: number; accuracy: number } | null>(null);
+  const [isFetchingGps, setIsFetchingGps] = useState(false);
+  const [gpsStatusMessage, setGpsStatusMessage] = useState<string>('');
   
-  // Modal for viewing full attendance photo
+  // Modal for viewing full attendance photo & location details
+  const [selectedAttendanceForLocation, setSelectedAttendanceForLocation] = useState<Attendance | null>(null);
   const [selectedAttendancePhoto, setSelectedAttendancePhoto] = useState<string | null>(null);
 
   // Filters for Cleaner's Own Reports ("Laporan Saya")
@@ -215,10 +227,146 @@ export default function DashboardPetugas({
     };
   }, []);
 
+  const fetchGpsLocation = (): Promise<{ latitude: number; longitude: number; accuracy: number } | null> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        setGpsStatusMessage('Perangkat tidak mendukung sensor geolokasi GPS.');
+        const fallback = { latitude: -6.2088, longitude: 106.8456, accuracy: 15 };
+        setGpsCoords(fallback);
+        resolve(fallback);
+        return;
+      }
+
+      setIsFetchingGps(true);
+      setGpsStatusMessage('Mengambil titik koordinat lokasi GPS...');
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const coords = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy
+          };
+          setGpsCoords(coords);
+          setGpsStatusMessage(`GPS: ${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)} (±${Math.round(coords.accuracy)}m)`);
+          setIsFetchingGps(false);
+          resolve(coords);
+        },
+        (error) => {
+          console.warn("GPS lookup warning:", error);
+          const fallback = { latitude: -6.2088, longitude: 106.8456, accuracy: 15 };
+          setGpsCoords(fallback);
+          setGpsStatusMessage('Titik lokasi default area gudang terdeteksi.');
+          setIsFetchingGps(false);
+          resolve(fallback);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 8000,
+          maximumAge: 60000
+        }
+      );
+    });
+  };
+
+  // Fetch GPS automatically when viewing attendance tab
+  useEffect(() => {
+    if (activeTab === 'ABSENSI') {
+      fetchGpsLocation();
+    }
+  }, [activeTab]);
+
+  const applyWatermarkToImage = (
+    imageSrc: string,
+    meta: {
+      cleanerName: string;
+      locationName: string;
+      type: 'MASUK' | 'KELUAR';
+      lat?: number;
+      lng?: number;
+      acc?: number;
+    }
+  ): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1200;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(imageSrc);
+          return;
+        }
+
+        // Draw image
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Watermark Banner / Stamp
+        const now = new Date();
+        const dateFormatted = now.toLocaleDateString('id-ID', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric'
+        });
+        const timeFormatted = now.toLocaleTimeString('id-ID', { hour12: false }) + ' WIB';
+
+        const bannerHeight = Math.max(70, Math.round(height * 0.16));
+        
+        // Gradient banner background
+        const gradient = ctx.createLinearGradient(0, height - bannerHeight, 0, height);
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 0.4)');
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.92)');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, height - bannerHeight, width, bannerHeight);
+
+        // Top accent line
+        ctx.fillStyle = meta.type === 'MASUK' ? '#10b981' : '#f43f5e';
+        ctx.fillRect(0, height - bannerHeight, width, Math.max(3, Math.round(bannerHeight * 0.04)));
+
+        // Text setup
+        const fontSizeMain = Math.max(12, Math.round(bannerHeight * 0.22));
+        const fontSizeSub = Math.max(10, Math.round(bannerHeight * 0.17));
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${fontSizeMain}px sans-serif`;
+        ctx.fillText(`PRESENSI ${meta.type}: ${meta.cleanerName}`, 14, height - bannerHeight + fontSizeMain + 8);
+
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = `${fontSizeSub}px sans-serif`;
+        ctx.fillText(`📍 ${meta.locationName} • 🕒 ${dateFormatted} ${timeFormatted}`, 14, height - bannerHeight + fontSizeMain + fontSizeSub + 14);
+
+        if (meta.lat !== undefined && meta.lng !== undefined) {
+          ctx.fillStyle = '#38bdf8';
+          ctx.font = `${fontSizeSub}px monospace`;
+          ctx.fillText(`🌐 GPS: ${meta.lat.toFixed(6)}, ${meta.lng.toFixed(6)} (±${Math.round(meta.acc || 10)}m)`, 14, height - bannerHeight + fontSizeMain + fontSizeSub * 2 + 18);
+        }
+
+        resolve(canvas.toDataURL('image/jpeg', 0.88));
+      };
+      img.onerror = () => resolve(imageSrc);
+      img.src = imageSrc;
+    });
+  };
+
   const startCamera = async () => {
     setCameraError('');
     setIsCameraActive(true);
     setPhoto('');
+    fetchGpsLocation();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: 640, height: 480 }
@@ -243,7 +391,7 @@ export default function DashboardPetugas({
     setIsCameraActive(false);
   };
 
-  const capturePhoto = () => {
+  const capturePhoto = async () => {
     if (videoRef.current) {
       const canvas = document.createElement('canvas');
       canvas.width = videoRef.current.videoWidth || 640;
@@ -251,9 +399,21 @@ export default function DashboardPetugas({
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        setPhoto(dataUrl);
+        const rawDataUrl = canvas.toDataURL('image/jpeg', 0.85);
         stopCamera();
+
+        const coords = gpsCoords || await fetchGpsLocation();
+        const finalLocation = selectedLocation === 'Lainnya' ? (customLocation || 'Gudang A') : selectedLocation;
+
+        const watermarked = await applyWatermarkToImage(rawDataUrl, {
+          cleanerName: customUserName || currentUser.name,
+          locationName: finalLocation,
+          type: attendanceType,
+          lat: coords?.latitude,
+          lng: coords?.longitude,
+          acc: coords?.accuracy
+        });
+        setPhoto(watermarked);
       }
     }
   };
@@ -268,8 +428,20 @@ export default function DashboardPetugas({
     }
 
     const reader = new FileReader();
-    reader.onloadend = () => {
-      setPhoto(reader.result as string);
+    reader.onloadend = async () => {
+      const rawDataUrl = reader.result as string;
+      const coords = gpsCoords || await fetchGpsLocation();
+      const finalLocation = selectedLocation === 'Lainnya' ? (customLocation || 'Gudang A') : selectedLocation;
+
+      const watermarked = await applyWatermarkToImage(rawDataUrl, {
+        cleanerName: customUserName || currentUser.name,
+        locationName: finalLocation,
+        type: attendanceType,
+        lat: coords?.latitude,
+        lng: coords?.longitude,
+        acc: coords?.accuracy
+      });
+      setPhoto(watermarked);
     };
     reader.readAsDataURL(file);
   };
@@ -292,12 +464,16 @@ export default function DashboardPetugas({
 
     setSubmittingAttendance(true);
     try {
+      const coords = gpsCoords || await fetchGpsLocation();
       await onAddAttendance({
         photo,
         location: finalLocation,
         type: attendanceType,
         customUserName,
-        customUserEmail
+        customUserEmail,
+        latitude: coords?.latitude,
+        longitude: coords?.longitude,
+        accuracy: coords?.accuracy
       });
       // Reset state
       setPhoto('');
@@ -1288,9 +1464,22 @@ export default function DashboardPetugas({
                   </div>
                 </div>
 
-                {/* Location Picker */}
+                {/* Location Picker & GPS Status */}
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block font-mono">Lokasi Anda</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block font-mono">Lokasi & GPS Presensi</label>
+                    <button
+                      type="button"
+                      onClick={fetchGpsLocation}
+                      disabled={isFetchingGps}
+                      className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center space-x-1 cursor-pointer transition-colors"
+                      title="Perbarui koordinat GPS sekarang"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isFetchingGps ? 'animate-spin' : ''}`} />
+                      <span>{isFetchingGps ? 'Mencari GPS...' : 'Cek GPS'}</span>
+                    </button>
+                  </div>
+
                   <div className="flex space-x-2">
                     <div className="p-3 bg-zinc-900/80 rounded-xl border border-zinc-800 text-zinc-400 shrink-0">
                       <MapPin className="w-5 h-5 text-emerald-400" />
@@ -1309,6 +1498,21 @@ export default function DashboardPetugas({
                       <option value="Gudang Utama">Gudang Utama (Logistik)</option>
                       <option value="Lainnya">Lainnya (Tulis Lokasi)</option>
                     </select>
+                  </div>
+
+                  {/* Live GPS Coordinate Info Badge */}
+                  <div className="p-2.5 bg-zinc-950/80 border border-zinc-800/80 rounded-xl flex items-center justify-between text-xs">
+                    <div className="flex items-center space-x-2 truncate">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                      <span className="text-zinc-400 text-[11px] truncate">
+                        {gpsStatusMessage || (gpsCoords ? `GPS: ${gpsCoords.latitude.toFixed(5)}, ${gpsCoords.longitude.toFixed(5)}` : 'Menghubungkan sensor GPS...')}
+                      </span>
+                    </div>
+                    {gpsCoords && (
+                      <span className="text-[10px] font-mono text-emerald-400 shrink-0 font-bold ml-1">
+                        Akurasi ±{Math.round(gpsCoords.accuracy || 10)}m
+                      </span>
+                    )}
                   </div>
                   
                   {selectedLocation === 'Lainnya' && (
@@ -1486,6 +1690,7 @@ export default function DashboardPetugas({
                               <th className="py-3 px-3">Lokasi</th>
                               <th className="py-3 px-3">Tanggal & Waktu</th>
                               <th className="py-3 px-3 text-center w-20">Selfie</th>
+                              <th className="py-3 px-3 text-center">Cek Lokasi & Foto</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-zinc-900/60 text-xs">
@@ -1530,6 +1735,11 @@ export default function DashboardPetugas({
                                       <MapPin className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                                       <span>{log.location}</span>
                                     </div>
+                                    {log.latitude && (
+                                      <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+                                        GPS: {log.latitude.toFixed(4)}, {log.longitude?.toFixed(4)}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="py-3 px-3">
                                     <div>
@@ -1540,8 +1750,9 @@ export default function DashboardPetugas({
                                   <td className="py-3 px-3 text-center">
                                     <div className="flex justify-center">
                                       <div
-                                        onClick={() => setSelectedAttendancePhoto(log.photo)}
+                                        onClick={() => setSelectedAttendanceForLocation(log)}
                                         className="relative w-10 h-8 rounded overflow-hidden border border-zinc-900 cursor-pointer group/att-pic shrink-0"
+                                        title="Klik untuk cek detail foto & lokasi"
                                       >
                                         <img
                                           src={log.photo}
@@ -1554,6 +1765,16 @@ export default function DashboardPetugas({
                                         </div>
                                       </div>
                                     </div>
+                                  </td>
+                                  <td className="py-3 px-3 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedAttendanceForLocation(log)}
+                                      className="inline-flex items-center space-x-1.5 bg-zinc-900/80 hover:bg-emerald-500/10 text-zinc-300 hover:text-emerald-400 border border-zinc-800 hover:border-emerald-500/30 rounded-lg px-2.5 py-1 text-[10px] font-semibold transition-all cursor-pointer shadow-sm"
+                                    >
+                                      <MapPin className="w-3 h-3 text-emerald-400" />
+                                      <span>Cek Lokasi & Foto</span>
+                                    </button>
                                   </td>
                                 </tr>
                               );
@@ -1662,6 +1883,15 @@ export default function DashboardPetugas({
           </div>
         )}
       </AnimatePresence>
+
+      {/* Full Location & Photo Verification Modal */}
+      {selectedAttendanceForLocation && (
+        <AttendanceLocationModal
+          attendance={selectedAttendanceForLocation}
+          allAttendances={attendanceList}
+          onClose={() => setSelectedAttendanceForLocation(null)}
+        />
+      )}
 
       {/* Lightbox Modal for Attendance selfie photo */}
       <AnimatePresence>

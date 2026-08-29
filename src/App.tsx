@@ -590,6 +590,11 @@ export default function App() {
     type: 'MASUK' | 'KELUAR';
     customUserName?: string;
     customUserEmail?: string;
+    latitude?: number;
+    longitude?: number;
+    accuracy?: number;
+    address?: string;
+    mapUrl?: string;
   }) => {
     if (!currentUser) return;
     try {
@@ -598,6 +603,10 @@ export default function App() {
       const dateStr = now.toISOString().split('T')[0];
       // Time in HH:MM:SS
       const timeStr = now.toLocaleTimeString('id-ID', { hour12: false });
+
+      const googleMapsLink = (attendanceData.latitude && attendanceData.longitude)
+        ? `https://www.google.com/maps?q=${attendanceData.latitude},${attendanceData.longitude}`
+        : attendanceData.mapUrl;
       
       const newAttendance: Attendance = {
         id: 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
@@ -609,11 +618,16 @@ export default function App() {
         time: timeStr,
         photo: attendanceData.photo,
         location: attendanceData.location,
-        type: attendanceData.type
+        type: attendanceData.type,
+        latitude: attendanceData.latitude,
+        longitude: attendanceData.longitude,
+        accuracy: attendanceData.accuracy,
+        address: attendanceData.address,
+        mapUrl: googleMapsLink
       };
       
       await saveAttendanceToFirestore(newAttendance);
-      showToast(`Absen ${attendanceData.type === 'MASUK' ? 'Masuk' : 'Keluar'} berhasil dicatat pada pukul ${timeStr}!`, 'success');
+      showToast(`Absen ${attendanceData.type === 'MASUK' ? 'Masuk' : 'Keluar'} berhasil dicatat beserta lokasi pada pukul ${timeStr}!`, 'success');
     } catch (err) {
       console.error("Failed to save attendance:", err);
       showToast("Gagal menyimpan data absensi.", "error");

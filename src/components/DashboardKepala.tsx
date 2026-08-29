@@ -52,6 +52,7 @@ import { Report, Warehouse, User, Task, Attendance, SystemSettings } from '../ty
 import { defaultSystemSettings } from '../mockData';
 import ExportReportsModal from './ExportReportsModal';
 import DashboardSettings from './DashboardSettings';
+import { AttendanceLocationModal } from './AttendanceLocationModal';
 
 const PRESET_AVATARS = [
   'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300',
@@ -184,6 +185,7 @@ export default function DashboardKepala({
   // Attendance logbook filters & state
   const [attendanceSearch, setAttendanceSearch] = useState('');
   const [attendanceTypeFilter, setAttendanceTypeFilter] = useState<'ALL' | 'MASUK' | 'KELUAR'>('ALL');
+  const [selectedAttendanceForLocationModal, setSelectedAttendanceForLocationModal] = useState<Attendance | null>(null);
   const [selectedAttendancePhoto, setSelectedAttendancePhoto] = useState<string | null>(null);
   const [selectedAttendanceIds, setSelectedAttendanceIds] = useState<string[]>([]);
 
@@ -2526,7 +2528,8 @@ export default function DashboardKepala({
                               <th className="py-3.5 px-4 text-center">Tipe Absen</th>
                               <th className="py-3.5 px-4">Lokasi</th>
                               <th className="py-3.5 px-4">Tanggal & Waktu</th>
-                              <th className="py-3.5 px-4 text-center w-28">Foto Selfie</th>
+                              <th className="py-3.5 px-4 text-center w-24">Foto Selfie</th>
+                              <th className="py-3.5 px-4 text-center">Cek Lokasi & Foto</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-zinc-900/60 text-xs">
@@ -2588,6 +2591,11 @@ export default function DashboardKepala({
                                       <MapPin className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                                       <span>{log.location}</span>
                                     </div>
+                                    {log.latitude && (
+                                      <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+                                        GPS: {log.latitude.toFixed(4)}, {log.longitude?.toFixed(4)}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="py-3.5 px-4">
                                     <div>
@@ -2598,8 +2606,9 @@ export default function DashboardKepala({
                                   <td className="py-3.5 px-4 text-center">
                                     <div className="flex justify-center">
                                       <div
-                                        onClick={() => setSelectedAttendancePhoto(log.photo)}
+                                        onClick={() => setSelectedAttendanceForLocationModal(log)}
                                         className="relative w-12 h-9 rounded overflow-hidden border border-zinc-900 cursor-pointer group/att-pic shrink-0"
+                                        title="Klik untuk cek detail lokasi & foto"
                                       >
                                         <img
                                           src={log.photo}
@@ -2612,6 +2621,16 @@ export default function DashboardKepala({
                                         </div>
                                       </div>
                                     </div>
+                                  </td>
+                                  <td className="py-3.5 px-4 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedAttendanceForLocationModal(log)}
+                                      className="inline-flex items-center space-x-1.5 bg-zinc-900/80 hover:bg-emerald-500/10 text-zinc-300 hover:text-emerald-400 border border-zinc-800 hover:border-emerald-500/30 rounded-lg px-2.5 py-1 text-[10px] font-semibold transition-all cursor-pointer shadow-sm"
+                                    >
+                                      <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span>Cek Lokasi & Foto</span>
+                                    </button>
                                   </td>
                                 </tr>
                               );
@@ -3324,6 +3343,15 @@ export default function DashboardKepala({
           </div>
         )}
       </AnimatePresence>
+
+      {/* Full Location & Photo Verification Modal */}
+      {selectedAttendanceForLocationModal && (
+        <AttendanceLocationModal
+          attendance={selectedAttendanceForLocationModal}
+          allAttendances={attendanceList}
+          onClose={() => setSelectedAttendanceForLocationModal(null)}
+        />
+      )}
 
     </div>
   );

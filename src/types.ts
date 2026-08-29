@@ -54,6 +54,11 @@ export interface Attendance {
   photo: string; // base64 image
   location: string; // e.g. "Gudang A", "Gudang Utama"
   type: 'MASUK' | 'KELUAR'; // Check-in or Check-out
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number; // In meters
+  address?: string;
+  mapUrl?: string;
 }
 
 export interface SystemSettings {
