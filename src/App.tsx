@@ -284,11 +284,23 @@ export default function App() {
       }
 
       // 3. Mark matching tasks as COMPLETED
-      const matchingTasks = tasks.filter(t => 
-        t.warehouse === reportData.warehouse && 
-        (t.assignedToUserId ? t.assignedToUserId === currentUser.id : t.assignedToEmail === currentUser.email) && 
-        t.status === 'PENDING'
-      );
+      const matchingTasks = tasks.filter(t => {
+        const matchesWarehouse = t.warehouse === reportData.warehouse;
+        const curId = (currentUser.id || '').trim().toLowerCase();
+        const curEmail = (currentUser.email || '').trim().toLowerCase();
+        const curName = (currentUser.name || '').trim().toLowerCase();
+
+        const tUserId = (t.assignedToUserId || '').trim().toLowerCase();
+        const tEmail = (t.assignedToEmail || '').trim().toLowerCase();
+        const tName = (t.assignedToName || '').trim().toLowerCase();
+
+        const isAssignedToMe = 
+          (tUserId && curId && tUserId === curId) ||
+          (tEmail && curEmail && tEmail === curEmail) ||
+          (tName && curName && tName === curName);
+
+        return matchesWarehouse && isAssignedToMe && t.status === 'PENDING';
+      });
       for (const t of matchingTasks) {
         await saveTaskToFirestore({
           ...t,
