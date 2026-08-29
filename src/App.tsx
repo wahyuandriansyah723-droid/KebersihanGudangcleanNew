@@ -218,12 +218,14 @@ export default function App() {
       // 1. Save Report
       await saveReportToFirestore(newReport);
 
-      // 2. Update warehouse status to 'DALAM_PENGERJAAN'
+      // 2. Update warehouse status to 'BERSIH' and record last cleaned details
       const wh = warehouses.find(w => w.id === reportData.warehouse);
       if (wh) {
         await saveWarehouseToFirestore({
           ...wh,
-          status: 'DALAM_PENGERJAAN'
+          status: 'BERSIH',
+          lastCleaned: reportTimestamp,
+          lastCleanedBy: currentUser.name
         });
       }
 

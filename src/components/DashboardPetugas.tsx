@@ -22,7 +22,8 @@ import {
   LogOut,
   Download,
   Trash2,
-  AlertTriangle
+  AlertTriangle,
+  LayoutDashboard
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -53,7 +54,7 @@ export default function DashboardPetugas({
   attendanceList,
   onAddAttendance
 }: DashboardPetugasProps) {
-  const [activeTab, setActiveTab] = useState<'TASKS' | 'REPORTS' | 'ABSENSI'>('TASKS');
+  const [activeTab, setActiveTab] = useState<'TASKS' | 'REPORTS' | 'STATUS_GUDANG' | 'ABSENSI'>('TASKS');
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
 
   // Attendance States
@@ -308,6 +309,13 @@ export default function DashboardPetugas({
   const myReports = reports.filter(r => r.cleanerEmail === currentUser.email)
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
+  // Calculate Warehouse Cleanliness Metrics
+  const totalWarehouses = warehouses.length;
+  const cleanCount = warehouses.filter(w => w.status === 'BERSIH').length;
+  const inProgressCount = warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length;
+  const dirtyCount = warehouses.filter(w => w.status === 'KOTOR').length;
+  const cleanPercentage = totalWarehouses > 0 ? Math.round((cleanCount / totalWarehouses) * 100) : 0;
+
   const getWarehouseName = (id: string) => {
     const wh = warehouses.find(w => w.id === id);
     return wh ? `${wh.name} - ${wh.area}` : `Gudang ${id}`;
@@ -369,24 +377,24 @@ export default function DashboardPetugas({
       </motion.div>
 
       {/* Metrics Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Task Summary Card */}
         <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex items-center justify-between">
           <div className="space-y-1">
             <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Progres Tugas Hari Ini</span>
             <div className="flex items-baseline space-x-2">
-              <span className="text-3xl font-extrabold text-white">
-                {myTasks.filter(t => t.status === 'COMPLETED').length} <span className="text-zinc-500 text-lg font-normal">dari</span> {myTasks.length}
+              <span className="text-2xl font-extrabold text-white">
+                {myTasks.filter(t => t.status === 'COMPLETED').length} <span className="text-zinc-500 text-base font-normal">/</span> {myTasks.length}
               </span>
               <span className="text-xs text-emerald-400 font-bold">Tugas Selesai</span>
             </div>
-            <p className="text-xs text-zinc-400">
+            <p className="text-[11px] text-zinc-400">
               {myTasks.filter(t => t.status !== 'COMPLETED').length === 0 
-                ? 'Luar biasa! Semua tugas kebersihan hari ini sudah selesai.' 
-                : `${myTasks.filter(t => t.status !== 'COMPLETED').length} tugas lagi perlu Anda selesaikan.`}
+                ? 'Semua tugas telah selesai dikerjakan.' 
+                : `${myTasks.filter(t => t.status !== 'COMPLETED').length} tugas perlu diselesaikan.`}
             </p>
           </div>
-          <div className="w-12 h-12 rounded-full bg-emerald-500/5 text-emerald-400 flex items-center justify-center font-bold text-sm shrink-0 border border-emerald-500/10">
+          <div className="w-11 h-11 rounded-full bg-emerald-500/5 text-emerald-400 flex items-center justify-center font-bold text-xs shrink-0 border border-emerald-500/10">
             {myTasks.length > 0 
               ? Math.round((myTasks.filter(t => t.status === 'COMPLETED').length / myTasks.length) * 100) 
               : 100}%
@@ -396,39 +404,61 @@ export default function DashboardPetugas({
         {/* Verification Status Card */}
         <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex items-center justify-between">
           <div className="space-y-1">
-            <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Status Laporan Terkirim</span>
-            <div className="flex items-center space-x-4">
+            <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Laporan Dikirim</span>
+            <div className="flex items-center space-x-3">
               <div>
-                <span className="text-2xl font-bold text-white block">{myReports.length}</span>
-                <span className="text-[10px] text-zinc-400 uppercase font-bold">Total Laporan</span>
+                <span className="text-xl font-bold text-white block">{myReports.length}</span>
+                <span className="text-[9px] text-zinc-400 uppercase font-bold">Total</span>
               </div>
-              <div className="h-8 w-[1px] bg-zinc-800" />
+              <div className="h-7 w-[1px] bg-zinc-800" />
               <div>
-                <span className="text-2xl font-bold text-emerald-400 block">
+                <span className="text-xl font-bold text-emerald-400 block">
                   {myReports.filter(r => r.status === 'APPROVED').length}
                 </span>
-                <span className="text-[10px] text-zinc-400 uppercase font-bold">Disetujui</span>
+                <span className="text-[9px] text-zinc-400 uppercase font-bold">Disetujui</span>
               </div>
-              <div className="h-8 w-[1px] bg-zinc-800" />
+              <div className="h-7 w-[1px] bg-zinc-800" />
               <div>
-                <span className="text-2xl font-bold text-amber-400 block">
+                <span className="text-xl font-bold text-amber-400 block">
                   {myReports.filter(r => r.status === 'PENDING').length}
                 </span>
-                <span className="text-[10px] text-zinc-400 uppercase font-bold">Proses</span>
+                <span className="text-[9px] text-zinc-400 uppercase font-bold">Proses</span>
               </div>
             </div>
           </div>
-          <div className="p-3 bg-zinc-800/20 rounded-xl border border-zinc-800 shrink-0 text-zinc-400">
-            <FileCheck2 className="w-5 h-5" />
+          <div className="p-2.5 bg-zinc-800/20 rounded-xl border border-zinc-800 shrink-0 text-zinc-400">
+            <FileCheck2 className="w-4 h-4" />
+          </div>
+        </div>
+
+        {/* Warehouse Cleanliness Standard Pass Percentage Card */}
+        <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex flex-col justify-between space-y-2">
+          <div className="space-y-1">
+            <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Standar Kebersihan Gudang</span>
+            <div className="flex items-baseline justify-between">
+              <div className="flex items-baseline space-x-2">
+                <span className="text-2xl font-extrabold text-white tracking-tight">{cleanPercentage}%</span>
+                <span className="text-xs text-emerald-400 font-bold">Lolos Standar</span>
+              </div>
+              <span className="text-[10px] text-zinc-400 font-mono font-medium">
+                {cleanCount}/{totalWarehouses} Area Bersih
+              </span>
+            </div>
+            <div className="w-full bg-zinc-950/60 rounded-full h-1.5 border border-zinc-900 overflow-hidden mt-1">
+              <div 
+                className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                style={{ width: `${cleanPercentage}%` }}
+              />
+            </div>
           </div>
         </div>
       </div>
 
       {/* Navigation Tabs */}
-      <div className="border-b border-zinc-900 flex space-x-6">
+      <div className="border-b border-zinc-900 flex space-x-6 overflow-x-auto">
         <button
           onClick={() => setActiveTab('TASKS')}
-          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 ${
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 shrink-0 ${
             activeTab === 'TASKS' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
           }`}
           id="tab-tasks"
@@ -441,7 +471,7 @@ export default function DashboardPetugas({
         </button>
         <button
           onClick={() => setActiveTab('REPORTS')}
-          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 ${
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 shrink-0 ${
             activeTab === 'REPORTS' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
           }`}
           id="tab-reports"
@@ -453,8 +483,21 @@ export default function DashboardPetugas({
           )}
         </button>
         <button
+          onClick={() => setActiveTab('STATUS_GUDANG')}
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 shrink-0 ${
+            activeTab === 'STATUS_GUDANG' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+          }`}
+          id="tab-status-gudang"
+        >
+          <LayoutDashboard className="w-4 h-4" />
+          <span>Status 12 Area Gudang ({cleanCount}/{totalWarehouses} Bersih)</span>
+          {activeTab === 'STATUS_GUDANG' && (
+            <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+          )}
+        </button>
+        <button
           onClick={() => setActiveTab('ABSENSI')}
-          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 ${
+          className={`pb-3.5 text-sm font-bold relative transition-all cursor-pointer flex items-center space-x-2 shrink-0 ${
             activeTab === 'ABSENSI' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
           }`}
           id="tab-attendance"
@@ -648,6 +691,130 @@ export default function DashboardPetugas({
                 ))}
               </div>
             )}
+          </motion.div>
+        )}
+
+        {activeTab === 'STATUS_GUDANG' && (
+          <motion.div
+            key="status-gudang-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="space-y-4"
+          >
+            {/* Header / Summary banner for Warehouses */}
+            <div className="p-4 bg-zinc-900/30 border border-zinc-900 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div>
+                <h4 className="text-sm font-bold text-white flex items-center space-x-2">
+                  <LayoutDashboard className="w-4 h-4 text-emerald-400" />
+                  <span>Monitoring Status 12 Area Gudang Logistik</span>
+                </h4>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Setiap kali Anda mengirimkan laporan kebersihan, status area gudang terkait akan otomatis berubah menjadi <span className="text-emerald-400 font-bold">Bersih</span> dan persentase standar kebersihan gudang langsung terupdate secara real-time.
+                </p>
+              </div>
+              <div className="flex items-center space-x-2 shrink-0">
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold font-mono">
+                  {cleanCount} Bersih
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-bold font-mono">
+                  {inProgressCount} Proses
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-bold font-mono">
+                  {dirtyCount} Kotor
+                </span>
+              </div>
+            </div>
+
+            {/* 12 Warehouse Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
+              {warehouses.map((w) => {
+                const isClean = w.status === 'BERSIH';
+                const isInProgress = w.status === 'DALAM_PENGERJAAN';
+
+                return (
+                  <motion.div
+                    key={w.id}
+                    whileHover={{ y: -2 }}
+                    className={`p-4 rounded-xl border transition-all flex flex-col justify-between ${
+                      isClean
+                        ? 'bg-emerald-950/15 border-emerald-900/30 hover:border-emerald-700/50'
+                        : isInProgress
+                        ? 'bg-amber-950/15 border-amber-900/30 hover:border-amber-700/50'
+                        : 'bg-zinc-900/30 border-zinc-900 hover:border-zinc-800'
+                    }`}
+                    id={`cleaner-wh-card-${w.id}`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center space-x-2">
+                          <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-black border ${
+                            isClean 
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' 
+                              : isInProgress
+                              ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                              : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                          }`}>
+                            {w.id}
+                          </span>
+                          <div>
+                            <h5 className="text-xs font-bold text-white">{w.name}</h5>
+                            <span className="text-[10px] text-zinc-500">{w.area}</span>
+                          </div>
+                        </div>
+
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 ${
+                          isClean
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            : isInProgress
+                            ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'
+                            : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            isClean ? 'bg-emerald-400' : isInProgress ? 'bg-amber-400' : 'bg-rose-400'
+                          }`} />
+                          <span>{isClean ? 'Bersih' : isInProgress ? 'Proses' : 'Kotor'}</span>
+                        </span>
+                      </div>
+
+                      <div className="mt-2 text-[11px] text-zinc-400 space-y-0.5">
+                        {w.lastCleaned ? (
+                          <>
+                            <div className="text-[10px] text-zinc-500">
+                              Dibersihkan: <span className="text-zinc-300 font-mono">{new Date(w.lastCleaned).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB</span>
+                            </div>
+                            {w.lastCleanedBy && (
+                              <div className="text-[10px] text-emerald-400/90 truncate">
+                                Oleh: <span className="font-semibold">{w.lastCleanedBy}</span>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-[10px] text-zinc-600 italic">Belum dibersihkan hari ini</div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-3 mt-3 border-t border-zinc-850/60 flex items-center justify-between">
+                      <span className="text-[9px] text-zinc-500 font-mono">Area {w.id}</span>
+                      <button
+                        onClick={() => onOpenReportModal(w.id)}
+                        className={`text-[11px] font-bold px-2.5 py-1 rounded-lg transition-all flex items-center space-x-1 cursor-pointer border-none ${
+                          isClean
+                            ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                            : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
+                        }`}
+                        id={`btn-report-wh-${w.id}`}
+                      >
+                        <span>{isClean ? 'Lapor Ulang' : 'Lapor Bersih'}</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
           </motion.div>
         )}
 
