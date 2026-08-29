@@ -117,6 +117,60 @@ export default function App() {
     };
   }, []);
 
+  // Daily Automatic Warehouse Status Refresh:
+  // Every change of day (new date), all 12 warehouse area statuses automatically refresh to 'KOTOR'
+  // if no cleaning report has been made for that warehouse on the new day.
+  // Historical data from previous days is permanently preserved in Firestore.
+  useEffect(() => {
+    if (warehouses.length === 0) return;
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const todayDateStr = `${year}-${month}-${day}`;
+
+    // Warehouses that have already been reported clean TODAY
+    const cleanedTodayWhIds = new Set(
+      reports
+        .filter(r => {
+          if (!r.timestamp) return false;
+          const rDate = new Date(r.timestamp);
+          const rY = rDate.getFullYear();
+          const rM = String(rDate.getMonth() + 1).padStart(2, '0');
+          const rD = String(rDate.getDate()).padStart(2, '0');
+          return `${rY}-${rM}-${rD}` === todayDateStr && (r.status === 'APPROVED' || r.status === 'PENDING');
+        })
+        .map(r => r.warehouse)
+    );
+
+    warehouses.forEach(async (wh) => {
+      let isCleanedToday = false;
+      if (wh.lastCleaned) {
+        const lcDate = new Date(wh.lastCleaned);
+        const lcY = lcDate.getFullYear();
+        const lcM = String(lcDate.getMonth() + 1).padStart(2, '0');
+        const lcD = String(lcDate.getDate()).padStart(2, '0');
+        isCleanedToday = `${lcY}-${lcM}-${lcD}` === todayDateStr;
+      }
+
+      const hasTodayReport = cleanedTodayWhIds.has(wh.id);
+
+      // If warehouse is marked as BERSIH or DALAM_PENGERJAAN, but was NOT cleaned today
+      // and has no report submitted today, automatically refresh status to KOTOR for the new day
+      if ((wh.status === 'BERSIH' || wh.status === 'DALAM_PENGERJAAN') && !isCleanedToday && !hasTodayReport) {
+        try {
+          await saveWarehouseToFirestore({
+            ...wh,
+            status: 'KOTOR'
+          });
+        } catch (e) {
+          console.error(`Error auto-refreshing warehouse ${wh.id} for new day:`, e);
+        }
+      }
+    });
+  }, [warehouses, reports]);
+
   const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => {

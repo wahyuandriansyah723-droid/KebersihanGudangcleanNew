@@ -35,7 +35,13 @@ import {
   Upload,
   Image as ImageIcon,
   Link as LinkIcon,
-  RotateCcw
+  RotateCcw,
+  Calendar,
+  CalendarDays,
+  Users,
+  FileText,
+  Layers,
+  Filter
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -145,7 +151,19 @@ export default function DashboardKepala({
   onImportDatabase
 }: DashboardKepalaProps) {
   const [activeTab, setActiveTab] = useState<'MONITORING' | 'TASKS' | 'PETUGAS' | 'ABSENSI' | 'SETTINGS'>('MONITORING');
-  const [periodFilter, setPeriodFilter] = useState<'ALL' | 'TODAY' | 'WEEK' | 'MONTH'>('ALL');
+  
+  // Date & Period Filter State (Per Tanggal)
+  const [dateFilterMode, setDateFilterMode] = useState<'TODAY' | 'YESTERDAY' | 'LAST_7' | 'LAST_30' | 'CUSTOM' | 'ALL'>('TODAY');
+  const [customSelectedDate, setCustomSelectedDate] = useState<string>(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  });
+  const [monitoringSubTab, setMonitoringSubTab] = useState<'REPORTS_AND_AREAS' | 'SUMMARY_BY_CLEANER' | 'SUMMARY_BY_WAREHOUSE'>('REPORTS_AND_AREAS');
+  const [cleanerFilter, setCleanerFilter] = useState<string>('ALL');
+
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportPeriod, setExportPeriod] = useState<'TODAY' | 'WEEK' | 'MONTH'>('TODAY');
 
@@ -318,38 +336,114 @@ export default function DashboardKepala({
     }
   };
 
-  const getIsInPeriod = (dateStr: string, period: 'ALL' | 'TODAY' | 'WEEK' | 'MONTH') => {
-    if (period === 'ALL') return true;
-    const date = new Date(dateStr);
+  // Helper to format Date to YYYY-MM-DD in local time
+  const formatToLocalDateString = (d: Date = new Date()) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayStr = formatToLocalDateString(new Date());
+  const yesterdayObj = new Date();
+  yesterdayObj.setDate(yesterdayObj.getDate() - 1);
+  const yesterdayStr = formatToLocalDateString(yesterdayObj);
+
+  const isSingleDateMode = dateFilterMode === 'TODAY' || dateFilterMode === 'YESTERDAY' || dateFilterMode === 'CUSTOM';
+  const effectiveSingleDateStr = 
+    dateFilterMode === 'TODAY' ? todayStr :
+    dateFilterMode === 'YESTERDAY' ? yesterdayStr :
+    dateFilterMode === 'CUSTOM' ? customSelectedDate : null;
+
+  const getIsReportInDateFilter = (timestamp: string) => {
+    if (!timestamp) return false;
+    if (dateFilterMode === 'ALL') return true;
+
+    const repDate = new Date(timestamp);
+    const repDateStr = formatToLocalDateString(repDate);
+
+    if (dateFilterMode === 'TODAY') {
+      return repDateStr === todayStr;
+    }
+    if (dateFilterMode === 'YESTERDAY') {
+      return repDateStr === yesterdayStr;
+    }
+    if (dateFilterMode === 'CUSTOM') {
+      return repDateStr === customSelectedDate;
+    }
+
     const now = new Date();
-    
-    if (period === 'TODAY') {
-      return date.toDateString() === now.toDateString();
-    }
-    
-    const diffMs = now.getTime() - date.getTime();
+    const diffMs = now.getTime() - repDate.getTime();
     const diffDays = diffMs / (1000 * 60 * 60 * 24);
-    
-    if (period === 'WEEK') {
-      return diffDays <= 7;
+
+    if (dateFilterMode === 'LAST_7') {
+      return diffDays >= 0 && diffDays <= 7;
     }
-    if (period === 'MONTH') {
-      return diffDays <= 30;
+    if (dateFilterMode === 'LAST_30') {
+      return diffDays >= 0 && diffDays <= 30;
     }
     return true;
   };
+
+  // Dynamic Warehouse list for selected date/period:
+  // When looking at a single day (e.g. today or a past date), the warehouse status reflects that day's cleanliness and reports
+  const dynamicWarehouses = warehouses.map((wh) => {
+    if (isSingleDateMode && effectiveSingleDateStr) {
+      const reportsOnDate = reports.filter(r => {
+        if (!r.timestamp) return false;
+        const rDate = formatToLocalDateString(new Date(r.timestamp));
+        return r.warehouse === wh.id && rDate === effectiveSingleDateStr;
+      }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      if (reportsOnDate.length > 0) {
+        const latestReport = reportsOnDate[0];
+        const status: Warehouse['status'] = 
+          latestReport.status === 'APPROVED' ? 'BERSIH' :
+          latestReport.status === 'PENDING' ? 'BERSIH' : 'KOTOR';
+
+        return {
+          ...wh,
+          status,
+          lastCleaned: latestReport.timestamp,
+          lastCleanedBy: latestReport.cleanerName,
+          dateReportCount: reportsOnDate.length,
+          latestReportStatus: latestReport.status,
+          latestReportId: latestReport.id
+        };
+      } else {
+        return {
+          ...wh,
+          status: 'KOTOR' as Warehouse['status'],
+          lastCleaned: undefined,
+          lastCleanedBy: undefined,
+          dateReportCount: 0,
+          latestReportStatus: undefined,
+          latestReportId: undefined
+        };
+      }
+    }
+
+    // Multi-day or ALL mode
+    const reportsForWh = reports.filter(r => r.warehouse === wh.id && getIsReportInDateFilter(r.timestamp));
+    return {
+      ...wh,
+      dateReportCount: reportsForWh.length
+    };
+  });
 
   // Filter reports
   const filteredReports = reports.filter(report => {
     const matchesSearch = 
       report.cleanerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      report.description.toLowerCase().includes(searchTerm.toLowerCase());
+      report.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      report.warehouse.toLowerCase().includes(searchTerm.toLowerCase());
     
     const matchesWarehouse = warehouseFilter === 'ALL' || report.warehouse === warehouseFilter;
+    const matchesCleaner = cleanerFilter === 'ALL' || report.cleanerEmail === cleanerFilter || report.cleanerName === cleanerFilter;
     const matchesStatus = statusFilter === 'ALL' || report.status === statusFilter;
-    const matchesPeriod = getIsInPeriod(report.timestamp, periodFilter);
+    const matchesPeriod = getIsReportInDateFilter(report.timestamp);
 
-    return matchesSearch && matchesWarehouse && matchesStatus && matchesPeriod;
+    return matchesSearch && matchesWarehouse && matchesCleaner && matchesStatus && matchesPeriod;
   }).sort((a, b) => {
     if (sortField === 'timestamp') {
       const timeA = new Date(a.timestamp).getTime();
@@ -362,14 +456,82 @@ export default function DashboardKepala({
     }
   });
 
-  // Calculate Metrics
-  const totalWarehouses = warehouses.length;
-  const cleanCount = warehouses.filter(w => w.status === 'BERSIH').length;
-  const dirtyCount = warehouses.filter(w => w.status === 'KOTOR').length;
-  const inProgressCount = warehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length;
-  const cleanPercentage = Math.round((cleanCount / totalWarehouses) * 100);
+  // Calculate Metrics based on dynamicWarehouses and filteredReports
+  const totalWarehouses = dynamicWarehouses.length;
+  const cleanCount = dynamicWarehouses.filter(w => w.status === 'BERSIH').length;
+  const dirtyCount = dynamicWarehouses.filter(w => w.status === 'KOTOR').length;
+  const inProgressCount = dynamicWarehouses.filter(w => w.status === 'DALAM_PENGERJAAN').length;
+  const cleanPercentage = totalWarehouses > 0 ? Math.round((cleanCount / totalWarehouses) * 100) : 0;
 
-  const pendingReportsCount = reports.filter(r => r.status === 'PENDING').length;
+  const dateFilteredAllReports = reports.filter(r => getIsReportInDateFilter(r.timestamp));
+  const pendingReportsCount = dateFilteredAllReports.filter(r => r.status === 'PENDING').length;
+  const approvedReportsCount = dateFilteredAllReports.filter(r => r.status === 'APPROVED').length;
+  const rejectedReportsCount = dateFilteredAllReports.filter(r => r.status === 'REJECTED').length;
+
+  // Cleaner summaries for the Sub-Tab
+  const cleanersList = users.filter(u => u.role === 'PETUGAS_KEBERSIHAN');
+  const cleanerSummaries = cleanersList.map(cleaner => {
+    const cleanerReports = reports.filter(r => 
+      (r.cleanerEmail === cleaner.email || r.cleanerName === cleaner.name) &&
+      getIsReportInDateFilter(r.timestamp) &&
+      (warehouseFilter === 'ALL' || r.warehouse === warehouseFilter)
+    );
+
+    const approvedCount = cleanerReports.filter(r => r.status === 'APPROVED').length;
+    const pendingCount = cleanerReports.filter(r => r.status === 'PENDING').length;
+    const rejectedCount = cleanerReports.filter(r => r.status === 'REJECTED').length;
+    const distinctWarehouses = Array.from(new Set(cleanerReports.map(r => r.warehouse))).sort();
+
+    let attendanceStatus: 'HADIR' | 'SELESAI_SHIFT' | 'BELUM_ABSEN' = 'BELUM_ABSEN';
+    let attendanceTime: string | null = null;
+    if (isSingleDateMode && effectiveSingleDateStr) {
+      const att = attendanceList.filter(a => 
+        (a.userId === cleaner.id || a.userEmail === cleaner.email) &&
+        a.date === effectiveSingleDateStr
+      ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      if (att.some(a => a.type === 'KELUAR')) {
+        attendanceStatus = 'SELESAI_SHIFT';
+        attendanceTime = att.find(a => a.type === 'KELUAR')?.time || null;
+      } else if (att.some(a => a.type === 'MASUK')) {
+        attendanceStatus = 'HADIR';
+        attendanceTime = att.find(a => a.type === 'MASUK')?.time || null;
+      }
+    }
+
+    return {
+      cleaner,
+      totalReports: cleanerReports.length,
+      approvedCount,
+      pendingCount,
+      rejectedCount,
+      distinctWarehouses,
+      reports: cleanerReports,
+      attendanceStatus,
+      attendanceTime
+    };
+  });
+
+  // Warehouse summaries for the Sub-Tab
+  const warehouseSummaries = dynamicWarehouses.map(w => {
+    const wReports = reports.filter(r => 
+      r.warehouse === w.id &&
+      getIsReportInDateFilter(r.timestamp) &&
+      (cleanerFilter === 'ALL' || r.cleanerEmail === cleanerFilter || r.cleanerName === cleanerFilter)
+    );
+
+    const distinctCleaners = Array.from(new Set(wReports.map(r => r.cleanerName)));
+
+    return {
+      warehouse: w,
+      totalReports: wReports.length,
+      approvedCount: wReports.filter(r => r.status === 'APPROVED').length,
+      pendingCount: wReports.filter(r => r.status === 'PENDING').length,
+      rejectedCount: wReports.filter(r => r.status === 'REJECTED').length,
+      cleaners: distinctCleaners,
+      reports: wReports
+    };
+  });
 
   const getStatusBadgeClass = (status: Warehouse['status']) => {
     switch (status) {
@@ -578,17 +740,204 @@ export default function DashboardKepala({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
-            className="space-y-7"
+            className="space-y-6"
           >
-            {/* Overview/Metrics Row */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* DATE & PERIOD FILTER BAR */}
+            <div className="p-4 sm:p-5 bg-zinc-900/30 border border-zinc-900/90 rounded-2xl space-y-3.5 shadow-lg">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <CalendarDays className="w-5 h-5 text-emerald-400" />
+                    <h3 className="font-extrabold font-display text-white text-base">
+                      Pemantauan Berdasarkan Tanggal
+                    </h3>
+                  </div>
+                  <p className="text-xs text-zinc-400">
+                    Cek status kebersihan 12 area gudang, rekap kinerja per petugas, dan arsip laporan harian.
+                  </p>
+                </div>
+
+                {/* Date Quick Presets & Custom Picker */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDateFilterMode('TODAY')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center space-x-1.5 ${
+                      dateFilterMode === 'TODAY'
+                        ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-zinc-950 hover:bg-zinc-850 text-zinc-300 border border-zinc-850'
+                    }`}
+                    id="date-filter-today"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Hari Ini</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDateFilterMode('YESTERDAY')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center space-x-1.5 ${
+                      dateFilterMode === 'YESTERDAY'
+                        ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-zinc-950 hover:bg-zinc-850 text-zinc-300 border border-zinc-850'
+                    }`}
+                    id="date-filter-yesterday"
+                  >
+                    <span>Kemarin</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDateFilterMode('LAST_7')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                      dateFilterMode === 'LAST_7'
+                        ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-zinc-950 hover:bg-zinc-850 text-zinc-300 border border-zinc-850'
+                    }`}
+                    id="date-filter-7days"
+                  >
+                    <span>7 Hari</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDateFilterMode('LAST_30')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                      dateFilterMode === 'LAST_30'
+                        ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-zinc-950 hover:bg-zinc-850 text-zinc-300 border border-zinc-850'
+                    }`}
+                    id="date-filter-30days"
+                  >
+                    <span>30 Hari</span>
+                  </button>
+
+                  {/* Custom Specific Date Picker Input */}
+                  <div className="flex items-center bg-zinc-950 border border-zinc-850 rounded-xl px-2.5 py-1 text-xs space-x-2 focus-within:border-emerald-500">
+                    <Calendar className="w-3.5 h-3.5 text-zinc-500" />
+                    <input
+                      type="date"
+                      value={customSelectedDate}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          setCustomSelectedDate(e.target.value);
+                          setDateFilterMode('CUSTOM');
+                        }
+                      }}
+                      className="bg-transparent text-zinc-200 text-xs outline-none cursor-pointer"
+                      id="custom-date-picker-input"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setDateFilterMode('ALL')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center space-x-1.5 ${
+                      dateFilterMode === 'ALL'
+                        ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-zinc-950 hover:bg-zinc-850 text-zinc-300 border border-zinc-850'
+                    }`}
+                    id="date-filter-all"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Semua Data</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Informative Active Date Context Banner */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2.5 border-t border-zinc-850/70 text-xs">
+                <div className="flex items-center space-x-2 text-zinc-300 font-medium">
+                  <span className="text-zinc-500">Periode Aktif:</span>
+                  <span className="font-bold text-white font-mono bg-zinc-950 px-2 py-0.5 rounded border border-zinc-800">
+                    {dateFilterMode === 'TODAY' && `Hari Ini (${new Date().toLocaleDateString('id-ID', { dateStyle: 'full' })})`}
+                    {dateFilterMode === 'YESTERDAY' && `Kemarin (${yesterdayObj.toLocaleDateString('id-ID', { dateStyle: 'full' })})`}
+                    {dateFilterMode === 'CUSTOM' && `Tanggal Terpilih: ${new Date(customSelectedDate + 'T00:00:00').toLocaleDateString('id-ID', { dateStyle: 'full' })}`}
+                    {dateFilterMode === 'LAST_7' && 'Rentang 7 Hari Terakhir'}
+                    {dateFilterMode === 'LAST_30' && 'Rentang 30 Hari Terakhir'}
+                    {dateFilterMode === 'ALL' && 'Seluruh Riwayat Arsip'}
+                  </span>
+                </div>
+
+                <div className="flex items-center space-x-2 text-[11px] text-zinc-400">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                  <span>
+                    {isSingleDateMode 
+                      ? 'Status 12 area gudang disesuaikan otomatis dengan laporan pada tanggal ini.'
+                      : 'Menampilkan data agregat laporan sepanjang periode terpilih.'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* SUB-TABS: (1) Laporan & Area Gudang, (2) Rekap Per Petugas, (3) Rekap Per Gudang */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-900 pb-3">
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setMonitoringSubTab('REPORTS_AND_AREAS')}
+                  className={`px-3.5 py-2 text-xs font-extrabold rounded-xl transition-all cursor-pointer flex items-center space-x-2 ${
+                    monitoringSubTab === 'REPORTS_AND_AREAS'
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-zinc-900/40 text-zinc-400 hover:text-zinc-200 border border-zinc-900'
+                  }`}
+                  id="subtab-reports-and-areas"
+                >
+                  <LayoutDashboard className="w-3.5 h-3.5" />
+                  <span>Daftar Laporan &amp; 12 Area Gudang</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonitoringSubTab('SUMMARY_BY_CLEANER')}
+                  className={`px-3.5 py-2 text-xs font-extrabold rounded-xl transition-all cursor-pointer flex items-center space-x-2 ${
+                    monitoringSubTab === 'SUMMARY_BY_CLEANER'
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-zinc-900/40 text-zinc-400 hover:text-zinc-200 border border-zinc-900'
+                  }`}
+                  id="subtab-summary-cleaner"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Rekap Per Petugas ({cleanersList.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonitoringSubTab('SUMMARY_BY_WAREHOUSE')}
+                  className={`px-3.5 py-2 text-xs font-extrabold rounded-xl transition-all cursor-pointer flex items-center space-x-2 ${
+                    monitoringSubTab === 'SUMMARY_BY_WAREHOUSE'
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-zinc-900/40 text-zinc-400 hover:text-zinc-200 border border-zinc-900'
+                  }`}
+                  id="subtab-summary-warehouse"
+                >
+                  <Grid className="w-3.5 h-3.5" />
+                  <span>Rekap Per Gudang (A - L)</span>
+                </button>
+              </div>
+
+              {/* Unduh Laporan Modal Trigger */}
+              <button
+                onClick={() => setIsExportModalOpen(true)}
+                className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-extrabold rounded-xl flex items-center space-x-1.5 cursor-pointer transition-all shadow-md shadow-emerald-500/10 hover:scale-[1.02] active:scale-[0.98]"
+                id="btn-trigger-export-reports"
+              >
+                <ClipboardList className="w-3.5 h-3.5 shrink-0" />
+                <span>Unduh Laporan Audit</span>
+              </button>
+            </div>
+
+            {/* Overview / Metrics Cards (Calculated based on Selected Date) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* Unified Cleanliness & Status Breakdown Card */}
               <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex flex-col justify-between space-y-4">
                 <div className="space-y-1.5">
-                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">Ringkasan Kebersihan Gudang</span>
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">
+                    {isSingleDateMode ? 'Standar Bersih Tanggal Ini' : 'Standar Kebersihan Rata-rata'}
+                  </span>
                   <div className="flex items-baseline space-x-2">
-                    <span className="text-3xl font-extrabold text-white tracking-tight">{cleanPercentage}%</span>
-                    <span className="text-xs text-emerald-400 font-bold">Lolos Standar Bersih</span>
+                    <span className="text-3xl font-extrabold text-white tracking-tight font-mono">{cleanPercentage}%</span>
+                    <span className="text-xs text-emerald-400 font-bold">Lolos Standar</span>
                   </div>
                   <div className="w-full bg-zinc-950/60 rounded-full h-2 border border-zinc-900 overflow-hidden">
                     <div 
@@ -614,451 +963,675 @@ export default function DashboardKepala({
                 </div>
               </div>
 
-              {/* Pending Verification Card */}
+              {/* Reports Breakdown Card */}
               <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex flex-col justify-between space-y-3">
                 <div className="space-y-1.5">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">
+                    Total Laporan ({dateFilteredAllReports.length})
+                  </span>
                   <div className="flex items-center space-x-3.5">
-                    <span className={`text-4xl font-black font-mono tracking-tight ${pendingReportsCount > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                      {pendingReportsCount}
+                    <span className={`text-3xl font-black font-mono tracking-tight ${pendingReportsCount > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {dateFilteredAllReports.length}
                     </span>
-                    <div>
-                      <span className="text-[10px] text-zinc-400 font-medium">
-                        {pendingReportsCount > 0 
-                          ? 'Perlu segera diperiksa dan disetujui hari ini'
-                          : 'Semua pekerjaan petugas telah selesai dikonfirmasi'}
-                      </span>
-                    </div>
+                    <span className="text-xs text-zinc-400 font-medium leading-snug">
+                      {pendingReportsCount > 0 
+                        ? `${pendingReportsCount} laporan perlu diverifikasi`
+                        : 'Semua laporan telah disetujui / tidak ada pending'}
+                    </span>
                   </div>
                 </div>
                 
-                <div className="pt-2 border-t border-zinc-850/60 flex items-center justify-between text-xs text-zinc-400">
-                  <span>Pemberitahuan Sistem</span>
-                  {pendingReportsCount > 0 ? (
-                    <span className="text-amber-400 font-bold animate-pulse flex items-center space-x-1">
-                      <span>●</span> <span>Ada Laporan Masuk</span>
-                    </span>
-                  ) : (
-                    <span className="text-emerald-400 font-bold flex items-center space-x-1">
-                      <span>✓</span> <span>Selesai Semua</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Grid Gudang A - L */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2 text-zinc-200">
-                  <LayoutDashboard className="w-5 h-5 text-emerald-400" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3.5">
-                {warehouses.map((w) => {
-                  const isSelected = warehouseFilter === w.id;
-                  return (
-                    <motion.div
-                      key={w.id}
-                      whileHover={{ y: -3, scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setWarehouseFilter(warehouseFilter === w.id ? 'ALL' : w.id);
-                        }
-                      }}
-                      onClick={() => {
-                        setWarehouseFilter(warehouseFilter === w.id ? 'ALL' : w.id);
-                      }}
-                      className={`p-4 rounded-xl border text-left transition-all relative cursor-pointer outline-none ${
-                        isSelected 
-                          ? 'bg-emerald-950/15 border-emerald-500 shadow-lg shadow-emerald-500/5 ring-1 ring-emerald-500/20' 
-                          : 'bg-zinc-900/30 hover:bg-zinc-900/60 border-zinc-900'
-                      }`}
-                      id={`warehouse-card-${w.id}`}
-                    >
-                      {/* Cleanliness Indicator */}
-                      <div className="absolute top-4 right-4">
-                        <span className={`w-2 h-2 rounded-full block ${
-                          w.status === 'BERSIH' ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 
-                          w.status === 'DALAM_PENGERJAAN' ? 'bg-amber-400 shadow-sm shadow-amber-400/50' : 'bg-rose-500 shadow-sm'
-                        }`} />
-                      </div>
-
-                      <span className="block font-black text-white text-lg tracking-tight font-display">Gudang {w.id}</span>
-                      <span className="block text-[10px] text-zinc-500 mt-0.5 truncate font-sans max-w-[80%]" title={w.area}>
-                        {w.area}
-                      </span>
-
-                      <div className="mt-4 pt-2.5 border-t border-zinc-900 flex items-center justify-between">
-                        <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded flex items-center space-x-1 ${getStatusBadgeClass(w.status)}`}>
-                          <span>{w.status === 'BERSIH' ? 'Bersih' : w.status === 'DALAM_PENGERJAAN' ? 'Proses' : 'Kotor'}</span>
-                        </span>
-                        
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingWarehouse(w);
-                            setTempStatus(w.status);
-                            setTempCleanedBy(w.lastCleanedBy || '');
-                          }}
-                          className="p-1 px-2.5 bg-zinc-800/80 hover:bg-emerald-500 hover:text-zinc-950 text-zinc-300 text-[9px] font-bold rounded-lg transition-all cursor-pointer border border-zinc-700/40 uppercase tracking-wider flex items-center"
-                          id={`edit-status-btn-${w.id}`}
-                          title="Ubah Status Gudang"
-                        >
-                          <span>Ubah</span>
-                        </button>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Main Report Table Container */}
-            <div className="bg-zinc-900/30 border border-zinc-900 rounded-2xl shadow-xl overflow-hidden animate-none" id="reports-table-container">
-              
-              {/* Table Filters & Search Header */}
-              <div className="p-5 border-b border-zinc-900 bg-zinc-950/20 space-y-4">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center space-y-3.5 md:space-y-0">
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-850/60 text-center text-xs">
                   <div>
-                    <h3 className="font-extrabold font-display text-white text-lg flex items-center space-x-2">
-                      <span>Daftar Laporan &amp; Pemantauan</span>
-                      {warehouseFilter !== 'ALL' && (
-                        <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold font-mono uppercase">
-                          Gudang {warehouseFilter} Only
-                        </span>
-                      )}
-                    </h3>
-                    <p className="text-xs text-zinc-500 mt-0.5">
-                      Gunakan filter di bawah untuk meninjau detail lampiran foto sebelum dan sesudah pengerjaan.
-                    </p>
+                    <span className="text-[10px] text-zinc-500 block uppercase font-bold">Menunggu</span>
+                    <span className="text-xs font-bold text-amber-400 font-mono">{pendingReportsCount}</span>
                   </div>
+                  <div>
+                    <span className="text-[10px] text-zinc-500 block uppercase font-bold">Disetujui</span>
+                    <span className="text-xs font-bold text-emerald-400 font-mono">{approvedReportsCount}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-zinc-500 block uppercase font-bold">Ditolak</span>
+                    <span className="text-xs font-bold text-rose-400 font-mono">{rejectedReportsCount}</span>
+                  </div>
+                </div>
+              </div>
 
-                  <div className="flex items-center space-x-2 self-stretch md:self-auto">
-                    {/* Unduh Laporan Audit Button */}
-                    <button
-                      onClick={() => setIsExportModalOpen(true)}
-                      className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-extrabold rounded-lg flex items-center space-x-1.5 cursor-pointer transition-all shadow-md shadow-emerald-500/10 hover:scale-[1.02] active:scale-[0.98]"
-                      id="btn-trigger-export-reports"
-                    >
-                      <ClipboardList className="w-3.5 h-3.5 shrink-0" />
-                      <span>Unduh Laporan Audit</span>
-                    </button>
+              {/* Active Cleaners Info Card */}
+              <div className="p-5 bg-zinc-900/20 border border-zinc-900/80 rounded-2xl flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider block">
+                    Petugas Kebersihan Aktif
+                  </span>
+                  <div className="flex items-baseline space-x-2">
+                    <span className="text-3xl font-extrabold text-white font-mono">
+                      {cleanerSummaries.filter(c => c.totalReports > 0 || c.attendanceStatus === 'HADIR' || c.attendanceStatus === 'SELESAI_SHIFT').length}
+                    </span>
+                    <span className="text-xs text-zinc-400 font-medium">dari {cleanersList.length} Petugas Terdaftar</span>
+                  </div>
+                </div>
 
-                    {/* Reset filter */}
-                    {(warehouseFilter !== 'ALL' || statusFilter !== 'ALL' || searchTerm) && (
+                <div className="pt-2 border-t border-zinc-850/60 flex items-center justify-between text-xs text-zinc-400">
+                  <span>Status Absensi</span>
+                  <span className="text-emerald-400 font-bold font-mono">
+                    {attendanceList.filter(a => a.date === (effectiveSingleDateStr || todayStr) && a.type === 'MASUK').length} Petugas Hadir
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* VIEW 1: REPORTS & 12 AREA GRID */}
+            {monitoringSubTab === 'REPORTS_AND_AREAS' && (
+              <div className="space-y-6">
+                {/* Grid Gudang A - L */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2 text-zinc-200">
+                      <LayoutDashboard className="w-5 h-5 text-emerald-400" />
+                      <span className="font-extrabold text-white text-base">Status 12 Area Gudang (A - L)</span>
+                    </div>
+                    {warehouseFilter !== 'ALL' && (
                       <button
-                        onClick={() => {
-                          setWarehouseFilter('ALL');
-                          setStatusFilter('ALL');
-                          setSearchTerm('');
-                        }}
-                        className="px-3 py-1.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-850 flex items-center space-x-1 cursor-pointer transition-colors"
+                        type="button"
+                        onClick={() => setWarehouseFilter('ALL')}
+                        className="text-xs text-emerald-400 hover:underline font-semibold cursor-pointer"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Reset Filter</span>
+                        Reset Pilihan Gudang ({warehouseFilter})
                       </button>
                     )}
                   </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3.5">
+                    {dynamicWarehouses.map((w) => {
+                      const isSelected = warehouseFilter === w.id;
+                      return (
+                        <motion.div
+                          key={w.id}
+                          whileHover={{ y: -3, scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setWarehouseFilter(warehouseFilter === w.id ? 'ALL' : w.id);
+                            }
+                          }}
+                          onClick={() => {
+                            setWarehouseFilter(warehouseFilter === w.id ? 'ALL' : w.id);
+                          }}
+                          className={`p-4 rounded-xl border text-left transition-all relative cursor-pointer outline-none ${
+                            isSelected 
+                              ? 'bg-emerald-950/20 border-emerald-500 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500/30' 
+                              : 'bg-zinc-900/30 hover:bg-zinc-900/60 border-zinc-900'
+                          }`}
+                          id={`warehouse-card-${w.id}`}
+                        >
+                          {/* Cleanliness Indicator */}
+                          <div className="absolute top-4 right-4">
+                            <span className={`w-2.5 h-2.5 rounded-full block ${
+                              w.status === 'BERSIH' ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 
+                              w.status === 'DALAM_PENGERJAAN' ? 'bg-amber-400 shadow-sm shadow-amber-400/50' : 'bg-rose-500 shadow-sm'
+                            }`} />
+                          </div>
+
+                          <span className="block font-black text-white text-lg tracking-tight font-display">Gudang {w.id}</span>
+                          <span className="block text-[10px] text-zinc-500 mt-0.5 truncate font-sans max-w-[80%]" title={w.area}>
+                            {w.area}
+                          </span>
+
+                          {w.lastCleanedBy && (
+                            <span className="block text-[9px] text-zinc-400 mt-1 truncate">
+                              Oleh: <strong className="text-zinc-200">{w.lastCleanedBy}</strong>
+                            </span>
+                          )}
+
+                          <div className="mt-3.5 pt-2.5 border-t border-zinc-900 flex items-center justify-between">
+                            <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded flex items-center space-x-1 ${getStatusBadgeClass(w.status)}`}>
+                              <span>{w.status === 'BERSIH' ? 'Bersih' : w.status === 'DALAM_PENGERJAAN' ? 'Proses' : 'Kotor'}</span>
+                            </span>
+                            
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingWarehouse(w);
+                                setTempStatus(w.status);
+                                setTempCleanedBy(w.lastCleanedBy || '');
+                              }}
+                              className="p-1 px-2 bg-zinc-800/80 hover:bg-emerald-500 hover:text-zinc-950 text-zinc-300 text-[9px] font-bold rounded-lg transition-all cursor-pointer border border-zinc-700/40 uppercase tracking-wider flex items-center"
+                              id={`edit-status-btn-${w.id}`}
+                              title="Ubah Status Gudang"
+                            >
+                              <span>Ubah</span>
+                            </button>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                {/* Filter Inputs Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {/* Search staff or desc */}
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-zinc-500 pointer-events-none">
-                      <Search className="w-4 h-4" />
-                    </span>
-                    <input
-                      type="text"
-                      placeholder="Cari nama petugas / keterangan..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-10 pr-4 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/20 rounded-xl text-xs text-zinc-200 placeholder-zinc-700 outline-none transition-all"
-                      id="search-reports-input"
-                    />
+                {/* Main Report Table Container */}
+                <div className="bg-zinc-900/30 border border-zinc-900 rounded-2xl shadow-xl overflow-hidden" id="reports-table-container">
+                  
+                  {/* Table Filters & Search Header */}
+                  <div className="p-5 border-b border-zinc-900 bg-zinc-950/20 space-y-4">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center space-y-3.5 md:space-y-0">
+                      <div>
+                        <h3 className="font-extrabold font-display text-white text-lg flex items-center space-x-2">
+                          <span>Daftar Laporan &amp; Pemantauan</span>
+                          {warehouseFilter !== 'ALL' && (
+                            <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold font-mono uppercase">
+                              Gudang {warehouseFilter} Only
+                            </span>
+                          )}
+                          {cleanerFilter !== 'ALL' && (
+                            <span className="text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded font-bold font-mono">
+                              Petugas: {cleanersList.find(c => c.id === cleanerFilter || c.email === cleanerFilter || c.name === cleanerFilter)?.name || cleanerFilter}
+                            </span>
+                          )}
+                        </h3>
+                        <p className="text-xs text-zinc-500 mt-0.5">
+                          Menampilkan hasil filter tanggal, petugas, gudang, dan status laporan.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center space-x-2 self-stretch md:self-auto">
+                        {/* Reset filter */}
+                        {(warehouseFilter !== 'ALL' || statusFilter !== 'ALL' || cleanerFilter !== 'ALL' || searchTerm) && (
+                          <button
+                            onClick={() => {
+                              setWarehouseFilter('ALL');
+                              setCleanerFilter('ALL');
+                              setStatusFilter('ALL');
+                              setSearchTerm('');
+                            }}
+                            className="px-3 py-1.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-850 flex items-center space-x-1 cursor-pointer transition-colors"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Reset Filter</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Filter Inputs Grid: Search, Cleaner, Warehouse, Status */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      {/* Search keyword */}
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-zinc-500 pointer-events-none">
+                          <Search className="w-4 h-4" />
+                        </span>
+                        <input
+                          type="text"
+                          placeholder="Cari petugas / keterangan..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          className="w-full pl-10 pr-4 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/20 rounded-xl text-xs text-zinc-200 placeholder-zinc-700 outline-none transition-all"
+                          id="search-reports-input"
+                        />
+                      </div>
+
+                      {/* Filter by Cleaner (Per Petugas) */}
+                      <div className="relative flex items-center">
+                        <span className="absolute left-3 text-zinc-500 text-xs font-semibold">Petugas:</span>
+                        <select
+                          value={cleanerFilter}
+                          onChange={(e) => setCleanerFilter(e.target.value)}
+                          className="w-full pl-18 pr-4 py-2 bg-zinc-950 border border-zinc-900 focus:border-emerald-500 rounded-xl text-xs text-zinc-200 outline-none appearance-none cursor-pointer transition-all truncate"
+                          id="cleaner-filter-select"
+                        >
+                          <option value="ALL">Semua Petugas</option>
+                          {cleanersList.map((cleaner) => (
+                            <option key={cleaner.id} value={cleaner.email}>
+                              {cleaner.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Filter by Warehouse (Per Gudang) */}
+                      <div className="relative flex items-center">
+                        <span className="absolute left-3 text-zinc-500 text-xs font-semibold">Gudang:</span>
+                        <select
+                          value={warehouseFilter}
+                          onChange={(e) => setWarehouseFilter(e.target.value)}
+                          className="w-full pl-18 pr-4 py-2 bg-zinc-950 border border-zinc-900 focus:border-emerald-500 rounded-xl text-xs text-zinc-200 outline-none appearance-none cursor-pointer transition-all"
+                          id="warehouse-filter-select"
+                        >
+                          <option value="ALL">Semua Gudang (A-L)</option>
+                          {alphabetList.map((code) => (
+                            <option key={code} value={code}>Gudang {code}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Filter by Status */}
+                      <div className="relative flex items-center">
+                        <span className="absolute left-3 text-zinc-500 text-xs font-semibold">Status:</span>
+                        <select
+                          value={statusFilter}
+                          onChange={(e) => setStatusFilter(e.target.value)}
+                          className="w-full pl-16 pr-4 py-2 bg-zinc-950 border border-zinc-900 focus:border-emerald-500 rounded-xl text-xs text-zinc-200 outline-none appearance-none cursor-pointer transition-all"
+                          id="status-filter-select"
+                        >
+                          <option value="ALL">Semua Status</option>
+                          <option value="PENDING">Menunggu Verifikasi</option>
+                          <option value="APPROVED">Telah Disetujui</option>
+                          <option value="REJECTED">Ditolak / Revisi</option>
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Warehouse Filter Selector */}
-                  <div className="relative flex items-center">
-                    <span className="absolute left-3 text-zinc-500 text-xs font-semibold">Gudang:</span>
-                    <select
-                      value={warehouseFilter}
-                      onChange={(e) => setWarehouseFilter(e.target.value)}
-                      className="w-full pl-18 pr-4 py-2 bg-zinc-950 border border-zinc-900 focus:border-emerald-500 rounded-xl text-xs text-zinc-200 outline-none appearance-none cursor-pointer transition-all"
-                      id="warehouse-filter-select"
-                    >
-                      <option value="ALL">Semua Gudang (A-L)</option>
-                      {alphabetList.map((code) => (
-                        <option key={code} value={code}>Gudang {code}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Status Filter Selector */}
-                  <div className="relative flex items-center">
-                    <span className="absolute left-3 text-zinc-500 text-xs font-semibold">Status:</span>
-                    <select
-                      value={statusFilter}
-                      onChange={(e) => setStatusFilter(e.target.value)}
-                      className="w-full pl-16 pr-4 py-2 bg-zinc-950 border border-zinc-900 focus:border-emerald-500 rounded-xl text-xs text-zinc-200 outline-none appearance-none cursor-pointer transition-all"
-                      id="status-filter-select"
-                    >
-                      <option value="ALL">Semua Status</option>
-                      <option value="PENDING">Menunggu Verifikasi</option>
-                      <option value="APPROVED">Telah Disetujui</option>
-                      <option value="REJECTED">Ditolak / Revisi</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Reports List / Table Grid */}
-              <div className="overflow-x-auto">
-                {filteredReports.length === 0 ? (
-                  <div className="p-12 text-center bg-zinc-900/10">
-                    <AlertTriangle className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
-                    <h4 className="font-bold text-white mb-1">Laporan Tidak Ditemukan</h4>
-                    <p className="text-xs text-zinc-400 max-w-sm mx-auto">
-                      Tidak ada laporan yang sesuai dengan pencarian atau filter yang Anda tetapkan. Silakan ubah filter Anda.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {/* DESKTOP TABLE VIEW */}
-                    <table className="w-full text-left border-collapse hidden md:table" id="desktop-reports-table">
-                      <thead>
-                        <tr className="bg-zinc-950/40 border-b border-zinc-900 text-zinc-400 text-[10px] font-bold uppercase tracking-wider">
-                          <th 
-                            onClick={() => handleSort('cleanerName')}
-                            className="py-3.5 px-5 cursor-pointer hover:text-zinc-200 transition-colors"
-                          >
-                            <div className="flex items-center space-x-1">
-                              <span>Petugas Kebersihan</span>
-                              <ArrowUpDown className="w-3 h-3" />
-                            </div>
-                          </th>
-                          <th className="py-3.5 px-4 text-center">Gudang</th>
-                          <th className="py-3.5 px-4 w-[40%]">Keterangan Pengerjaan</th>
-                          <th className="py-3.5 px-4 text-center">Lampiran Foto (Sebelum &amp; Sesudah)</th>
-                          <th 
-                            onClick={() => handleSort('timestamp')}
-                            className="py-3.5 px-4 cursor-pointer hover:text-zinc-200 transition-colors"
-                          >
-                            <div className="flex items-center space-x-1">
-                              <span>Waktu Laporan</span>
-                              <ArrowUpDown className="w-3 h-3" />
-                            </div>
-                          </th>
-                          <th className="py-3.5 px-4 text-center">Status</th>
-                          <th className="py-3.5 px-5 text-right">Tindakan</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-zinc-900 text-xs">
-                        {filteredReports.map((report) => (
-                          <tr 
-                            key={report.id} 
-                            className="hover:bg-zinc-900/10 transition-colors"
-                            id={`row-report-${report.id}`}
-                          >
-                            {/* Name Column */}
-                            <td className="py-4 px-5">
-                              <div className="flex items-center space-x-3">
-                                <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-zinc-300">
-                                  {report.cleanerName.charAt(0)}
+                  {/* Reports List / Table Grid */}
+                  <div className="overflow-x-auto">
+                    {filteredReports.length === 0 ? (
+                      <div className="p-12 text-center bg-zinc-900/10">
+                        <AlertTriangle className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+                        <h4 className="font-bold text-white mb-1">Laporan Tidak Ditemukan</h4>
+                        <p className="text-xs text-zinc-400 max-w-sm mx-auto">
+                          Tidak ada laporan yang sesuai dengan filter tanggal, petugas, atau gudang yang dipilih. Silakan ubah filter atau tanggal Anda.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        {/* DESKTOP TABLE VIEW */}
+                        <table className="w-full text-left border-collapse hidden md:table" id="desktop-reports-table">
+                          <thead>
+                            <tr className="bg-zinc-950/40 border-b border-zinc-900 text-zinc-400 text-[10px] font-bold uppercase tracking-wider">
+                              <th 
+                                onClick={() => handleSort('cleanerName')}
+                                className="py-3.5 px-5 cursor-pointer hover:text-zinc-200 transition-colors"
+                              >
+                                <div className="flex items-center space-x-1">
+                                  <span>Petugas Kebersihan</span>
+                                  <ArrowUpDown className="w-3 h-3" />
                                 </div>
-                                <div>
-                                  <span className="font-semibold text-zinc-100 block">{report.cleanerName}</span>
-                                  <span className="text-[10px] text-zinc-500 font-mono block">{report.cleanerEmail}</span>
+                              </th>
+                              <th className="py-3.5 px-4 text-center">Gudang</th>
+                              <th className="py-3.5 px-4 w-[38%]">Keterangan Pengerjaan</th>
+                              <th className="py-3.5 px-4 text-center">Lampiran Foto</th>
+                              <th 
+                                onClick={() => handleSort('timestamp')}
+                                className="py-3.5 px-4 cursor-pointer hover:text-zinc-200 transition-colors"
+                              >
+                                <div className="flex items-center space-x-1">
+                                  <span>Waktu Laporan</span>
+                                  <ArrowUpDown className="w-3 h-3" />
                                 </div>
+                              </th>
+                              <th className="py-3.5 px-4 text-center">Status</th>
+                              <th className="py-3.5 px-5 text-right">Tindakan</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-900 text-xs">
+                            {filteredReports.map((report) => (
+                              <tr 
+                                key={report.id} 
+                                className="hover:bg-zinc-900/10 transition-colors"
+                                id={`row-report-${report.id}`}
+                              >
+                                {/* Name Column */}
+                                <td className="py-4 px-5">
+                                  <div className="flex items-center space-x-3">
+                                    <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-zinc-300">
+                                      {report.cleanerName.charAt(0)}
+                                    </div>
+                                    <div>
+                                      <span className="font-semibold text-zinc-100 block">{report.cleanerName}</span>
+                                      <span className="text-[10px] text-zinc-500 font-mono block">{report.cleanerEmail}</span>
+                                    </div>
+                                  </div>
+                                </td>
+
+                                {/* Warehouse Column */}
+                                <td className="py-4 px-4 text-center">
+                                  <span className="inline-flex justify-center items-center w-8 h-8 rounded-lg bg-zinc-950 font-black text-zinc-200 border border-zinc-900">
+                                    {report.warehouse}
+                                  </span>
+                                </td>
+
+                                {/* Description Column */}
+                                <td className="py-4 px-4">
+                                  <p className="text-zinc-300 font-medium leading-relaxed line-clamp-2" title={report.description}>
+                                    {report.description}
+                                  </p>
+                                  {report.feedback && (
+                                    <span className="inline-block mt-1 text-[10px] text-emerald-400 bg-emerald-500/5 px-1.5 py-0.5 rounded border border-emerald-500/10 italic">
+                                      Komentar: &quot;{report.feedback}&quot;
+                                    </span>
+                                  )}
+                                </td>
+
+                                {/* Photo Attachments Column */}
+                                <td className="py-4 px-4">
+                                  <div className="flex justify-center items-center space-x-3">
+                                    <div className="relative cursor-pointer group" onClick={() => setSelectedReport(report)}>
+                                      <img
+                                        src={report.photoBefore}
+                                        alt="Sebelum"
+                                        className="w-12 h-12 rounded object-cover border border-zinc-900 hover:border-zinc-700 transition-all shadow-sm"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                      <span className="absolute bottom-0 right-0 bg-rose-600 text-[6px] text-white font-extrabold px-0.5 rounded">BEFORE</span>
+                                    </div>
+                                    <div className="relative cursor-pointer group" onClick={() => setSelectedReport(report)}>
+                                      <img
+                                        src={report.photoAfter}
+                                        alt="Sesudah"
+                                        className="w-12 h-12 rounded object-cover border border-zinc-900 hover:border-zinc-700 transition-all shadow-sm"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                      <span className="absolute bottom-0 right-0 bg-emerald-600 text-[6px] text-white font-extrabold px-0.5 rounded">AFTER</span>
+                                    </div>
+                                  </div>
+                                </td>
+
+                                {/* Timestamp Column */}
+                                <td className="py-4 px-4 text-zinc-450 font-medium">
+                                  <span className="block text-zinc-200">
+                                    {new Date(report.timestamp).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                  </span>
+                                  <span className="block text-[10px] text-zinc-550 mt-0.5 font-mono">
+                                    {new Date(report.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB
+                                  </span>
+                                </td>
+
+                                {/* Status Column */}
+                                <td className="py-4 px-4 text-center">
+                                  <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${getReportStatusBadgeClass(report.status)}`}>
+                                    {getReportStatusLabel(report.status)}
+                                  </span>
+                                </td>
+
+                                {/* Action Column */}
+                                <td className="py-4 px-5 text-right">
+                                  <div className="flex items-center justify-end space-x-2">
+                                    {report.status === 'PENDING' ? (
+                                      <motion.button
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
+                                        onClick={() => setSelectedReport(report)}
+                                        className="inline-flex items-center space-x-1.5 py-1.5 px-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-[10px] uppercase tracking-wider rounded-lg transition-colors cursor-pointer border-none"
+                                        id={`verify-btn-${report.id}`}
+                                      >
+                                        <span>Periksa</span>
+                                        <Eye className="w-3.5 h-3.5" />
+                                      </motion.button>
+                                    ) : (
+                                      <button
+                                        onClick={() => setSelectedReport(report)}
+                                        className="p-1.5 hover:bg-zinc-800 text-zinc-350 hover:text-zinc-100 rounded-lg transition-all inline-flex cursor-pointer"
+                                        title="Tinjau Laporan"
+                                      >
+                                        <Eye className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => onDeleteReport(report.id)}
+                                      className="p-1.5 hover:bg-rose-500/10 text-zinc-500 hover:text-rose-400 rounded-lg transition-all inline-flex cursor-pointer"
+                                      title="Hapus Laporan"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        {/* MOBILE RESPONSIVE CARD VIEW */}
+                        <div className="grid grid-cols-1 gap-4 p-4 md:hidden" id="mobile-reports-list">
+                          {filteredReports.map((report) => (
+                            <div
+                              key={report.id}
+                              className="p-4 bg-zinc-950/40 border border-zinc-900 rounded-xl space-y-3"
+                              id={`mobile-report-card-${report.id}`}
+                            >
+                              <div className="flex justify-between items-start">
+                                <div className="flex items-center space-x-2.5">
+                                  <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-zinc-300 text-xs">
+                                    {report.cleanerName.charAt(0)}
+                                  </div>
+                                  <div>
+                                    <span className="font-bold text-white text-xs block">{report.cleanerName}</span>
+                                    <span className="text-[9px] text-zinc-550 font-mono block">
+                                      {new Date(report.timestamp).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })} WIB
+                                    </span>
+                                  </div>
+                                </div>
+                                <span className="inline-flex items-center w-7 h-7 rounded bg-zinc-950 font-extrabold text-zinc-200 border border-zinc-900 text-xs justify-center shrink-0">
+                                  {report.warehouse}
+                                </span>
                               </div>
-                            </td>
 
-                            {/* Warehouse Column */}
-                            <td className="py-4 px-4 text-center">
-                              <span className="inline-flex justify-center items-center w-8 h-8 rounded-lg bg-zinc-950 font-black text-zinc-200 border border-zinc-900">
-                                {report.warehouse}
-                              </span>
-                            </td>
-
-                            {/* Description Column */}
-                            <td className="py-4 px-4">
-                              <p className="text-zinc-300 font-medium leading-relaxed line-clamp-2" title={report.description}>
+                              <p className="text-zinc-300 text-xs font-medium leading-relaxed pl-1">
                                 {report.description}
                               </p>
-                              {report.feedback && (
-                                <span className="inline-block mt-1 text-[10px] text-emerald-400 bg-emerald-500/5 px-1.5 py-0.5 rounded border border-emerald-500/10 italic">
-                                  Komentar: &quot;{report.feedback}&quot;
-                                </span>
-                              )}
-                            </td>
 
-                            {/* Photo Attachments Column */}
-                            <td className="py-4 px-4">
-                              <div className="flex justify-center items-center space-x-3">
-                                <div className="relative cursor-pointer group" onClick={() => setSelectedReport(report)}>
+                              {/* Previews before & after */}
+                              <div className="grid grid-cols-2 gap-2 pt-1">
+                                <div className="relative cursor-pointer rounded-lg overflow-hidden border border-zinc-900" onClick={() => setSelectedReport(report)}>
                                   <img
                                     src={report.photoBefore}
                                     alt="Sebelum"
-                                    className="w-12 h-12 rounded object-cover border border-zinc-900 hover:border-zinc-700 transition-all shadow-sm"
+                                    className="w-full h-20 object-cover"
                                     referrerPolicy="no-referrer"
                                   />
-                                  <span className="absolute bottom-0 right-0 bg-rose-600 text-[6px] text-white font-extrabold px-0.5 rounded">BEFORE</span>
+                                  <span className="absolute bottom-1 right-1 bg-rose-600 text-[6px] text-white font-extrabold px-1 rounded">BEFORE</span>
                                 </div>
-                                <div className="relative cursor-pointer group" onClick={() => setSelectedReport(report)}>
+                                <div className="relative cursor-pointer rounded-lg overflow-hidden border border-zinc-900" onClick={() => setSelectedReport(report)}>
                                   <img
                                     src={report.photoAfter}
                                     alt="Sesudah"
-                                    className="w-12 h-12 rounded object-cover border border-zinc-900 hover:border-zinc-700 transition-all shadow-sm"
+                                    className="w-full h-20 object-cover"
                                     referrerPolicy="no-referrer"
                                   />
-                                  <span className="absolute bottom-0 right-0 bg-emerald-600 text-[6px] text-white font-extrabold px-0.5 rounded">AFTER</span>
+                                  <span className="absolute bottom-1 right-1 bg-emerald-600 text-[6px] text-white font-extrabold px-1 rounded">AFTER</span>
                                 </div>
                               </div>
-                            </td>
 
-                            {/* Timestamp Column */}
-                            <td className="py-4 px-4 text-zinc-450 font-medium">
-                              <span className="block text-zinc-200">
-                                {new Date(report.timestamp).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
-                              </span>
-                              <span className="block text-[10px] text-zinc-550 mt-0.5 font-mono">
-                                {new Date(report.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB
-                              </span>
-                            </td>
-
-                            {/* Status Column */}
-                            <td className="py-4 px-4 text-center">
-                              <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${getReportStatusBadgeClass(report.status)}`}>
-                                {getReportStatusLabel(report.status)}
-                              </span>
-                            </td>
-
-                            {/* Action Column */}
-                            <td className="py-4 px-5 text-right">
-                              <div className="flex items-center justify-end space-x-2">
-                                {report.status === 'PENDING' ? (
-                                  <motion.button
-                                    whileHover={{ scale: 1.05 }}
-                                    whileTap={{ scale: 0.95 }}
-                                    onClick={() => setSelectedReport(report)}
-                                    className="inline-flex items-center space-x-1.5 py-1.5 px-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-[10px] uppercase tracking-wider rounded-lg transition-colors cursor-pointer border-none"
-                                    id={`verify-btn-${report.id}`}
-                                  >
-                                    <span>Periksa</span>
-                                    <Eye className="w-3.5 h-3.5" />
-                                  </motion.button>
-                                ) : (
-                                  <button
-                                    onClick={() => setSelectedReport(report)}
-                                    className="p-1.5 hover:bg-zinc-800 text-zinc-350 hover:text-zinc-100 rounded-lg transition-all inline-flex cursor-pointer"
-                                    title="Tinjau Laporan"
-                                  >
-                                    <Eye className="w-4 h-4" />
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => onDeleteReport(report.id)}
-                                  className="p-1.5 hover:bg-rose-500/10 text-zinc-500 hover:text-rose-400 rounded-lg transition-all inline-flex cursor-pointer"
-                                  title="Hapus Laporan"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-
-                    {/* MOBILE RESPONSIVE CARD VIEW (Fits standard mobile constraints gracefully) */}
-                    <div className="grid grid-cols-1 gap-4 p-4 md:hidden" id="mobile-reports-list">
-                      {filteredReports.map((report) => (
-                        <div
-                          key={report.id}
-                          className="p-4 bg-zinc-950/40 border border-zinc-900 rounded-xl space-y-3"
-                          id={`mobile-report-card-${report.id}`}
-                        >
-                          <div className="flex justify-between items-start">
-                            <div className="flex items-center space-x-2.5">
-                              <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-zinc-300 text-xs">
-                                {report.cleanerName.charAt(0)}
-                              </div>
-                              <div>
-                                <span className="font-bold text-white text-xs block">{report.cleanerName}</span>
-                                <span className="text-[9px] text-zinc-550 font-mono block">
-                                  {new Date(report.timestamp).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })} WIB
+                              <div className="flex items-center justify-between border-t border-zinc-850 pt-2.5">
+                                <span className={`text-[8px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${getReportStatusBadgeClass(report.status)}`}>
+                                  {getReportStatusLabel(report.status)}
                                 </span>
+                                
+                                <div className="flex items-center space-x-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedReport(report)}
+                                    className="py-1 px-2.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-bold rounded-lg transition-all cursor-pointer border border-zinc-800"
+                                    id={`mobile-action-${report.id}`}
+                                  >
+                                    {report.status === 'PENDING' ? 'Periksa Laporan' : 'Lihat Detail'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onDeleteReport(report.id)}
+                                    className="p-1.5 bg-rose-950/15 border border-rose-900/30 text-rose-400 hover:bg-rose-500 hover:text-zinc-950 rounded-lg transition-all cursor-pointer"
+                                    title="Hapus Laporan"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </div>
                             </div>
-                            <span className="inline-flex items-center w-7 h-7 rounded bg-zinc-950 font-extrabold text-zinc-200 border border-zinc-900 text-xs justify-center shrink-0">
-                              {report.warehouse}
-                            </span>
-                          </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
-                          <p className="text-zinc-300 text-xs font-medium leading-relaxed pl-1">
-                            {report.description}
-                          </p>
+            {/* VIEW 2: REKAP PER PETUGAS (Performance Breakdown by Cleaner on Selected Date) */}
+            {monitoringSubTab === 'SUMMARY_BY_CLEANER' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-extrabold font-display text-white text-base flex items-center space-x-2">
+                      <Users className="w-4 h-4 text-emerald-400" />
+                      <span>Rekap Kinerja Petugas Kebersihan</span>
+                    </h3>
+                    <p className="text-xs text-zinc-500">
+                      Rangkuman jumlah gudang yang dibersihkan, status verifikasi laporan, dan catatan absensi.
+                    </p>
+                  </div>
+                </div>
 
-                          {/* Previews before &amp; after */}
-                          <div className="grid grid-cols-2 gap-2 pt-1">
-                            <div className="relative cursor-pointer rounded-lg overflow-hidden border border-zinc-900" onClick={() => setSelectedReport(report)}>
-                              <img
-                                src={report.photoBefore}
-                                alt="Sebelum"
-                                className="w-full h-20 object-cover"
-                                referrerPolicy="no-referrer"
-                              />
-                              <span className="absolute bottom-1 right-1 bg-rose-600 text-[6px] text-white font-extrabold px-1 rounded">BEFORE</span>
-                            </div>
-                            <div className="relative cursor-pointer rounded-lg overflow-hidden border border-zinc-900" onClick={() => setSelectedReport(report)}>
-                              <img
-                                src={report.photoAfter}
-                                alt="Sesudah"
-                                className="w-full h-20 object-cover"
-                                referrerPolicy="no-referrer"
-                              />
-                              <span className="absolute bottom-1 right-1 bg-emerald-600 text-[6px] text-white font-extrabold px-1 rounded">AFTER</span>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-between border-t border-zinc-850 pt-2.5">
-                            <span className={`text-[8px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${getReportStatusBadgeClass(report.status)}`}>
-                              {getReportStatusLabel(report.status)}
-                            </span>
-                            
-                            <div className="flex items-center space-x-2">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedReport(report)}
-                                className="py-1 px-2.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-[10px] font-bold rounded-lg transition-all cursor-pointer border border-zinc-800"
-                                id={`mobile-action-${report.id}`}
-                              >
-                                {report.status === 'PENDING' ? 'Periksa Laporan' : 'Lihat Detail'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onDeleteReport(report.id)}
-                                className="p-1.5 bg-rose-950/15 border border-rose-900/30 text-rose-400 hover:bg-rose-500 hover:text-zinc-950 rounded-lg transition-all cursor-pointer"
-                                title="Hapus Laporan"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {cleanerSummaries.map((item) => (
+                    <div
+                      key={item.cleaner.id}
+                      className="p-5 bg-zinc-900/30 border border-zinc-900 rounded-2xl space-y-4 hover:border-zinc-800 transition-all flex flex-col justify-between"
+                      id={`cleaner-summary-card-${item.cleaner.id}`}
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-3">
+                            <img
+                              src={item.cleaner.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300'}
+                              alt={item.cleaner.name}
+                              className="w-11 h-11 rounded-full object-cover border border-zinc-800"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div>
+                              <h4 className="font-bold text-white text-sm">{item.cleaner.name}</h4>
+                              <span className="text-[11px] text-zinc-500 font-mono block">{item.cleaner.email}</span>
                             </div>
                           </div>
                         </div>
-                      ))}
+
+                        {/* Status Absensi & Waktu */}
+                        <div className="p-2.5 bg-zinc-950/60 rounded-xl border border-zinc-900 flex items-center justify-between text-xs">
+                          <span className="text-zinc-400 text-[11px]">Kehadiran:</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                            item.attendanceStatus === 'HADIR' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                            item.attendanceStatus === 'SELESAI_SHIFT' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' :
+                            'bg-zinc-800 text-zinc-400'
+                          }`}>
+                            {item.attendanceStatus === 'HADIR' && `Hadir (${item.attendanceTime || ''} WIB)`}
+                            {item.attendanceStatus === 'SELESAI_SHIFT' && `Selesai Shift (${item.attendanceTime || ''} WIB)`}
+                            {item.attendanceStatus === 'BELUM_ABSEN' && 'Belum Absen'}
+                          </span>
+                        </div>
+
+                        {/* Areas Cleaned */}
+                        <div className="space-y-1.5 text-xs">
+                          <span className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider block">Area yang Dibersihkan:</span>
+                          {item.distinctWarehouses.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {item.distinctWarehouses.map((wh) => (
+                                <span key={wh} className="px-2 py-0.5 bg-emerald-950/30 text-emerald-400 border border-emerald-500/20 font-bold rounded text-[11px]">
+                                  Gudang {wh}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-zinc-600 text-xs italic">Belum ada laporan area pada periode ini</span>
+                          )}
+                        </div>
+
+                        {/* Report Counts breakdown */}
+                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-850/60 text-center text-xs">
+                          <div className="p-1.5 bg-zinc-950/40 rounded-lg">
+                            <span className="text-[10px] text-zinc-500 block">Total</span>
+                            <span className="font-extrabold text-white font-mono">{item.totalReports}</span>
+                          </div>
+                          <div className="p-1.5 bg-zinc-950/40 rounded-lg">
+                            <span className="text-[10px] text-emerald-500 block">Disetujui</span>
+                            <span className="font-extrabold text-emerald-400 font-mono">{item.approvedCount}</span>
+                          </div>
+                          <div className="p-1.5 bg-zinc-950/40 rounded-lg">
+                            <span className="text-[10px] text-amber-500 block">Menunggu</span>
+                            <span className="font-extrabold text-amber-400 font-mono">{item.pendingCount}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCleanerFilter(item.cleaner.email);
+                          setMonitoringSubTab('REPORTS_AND_AREAS');
+                        }}
+                        className="w-full py-2 bg-zinc-850 hover:bg-emerald-500 hover:text-zinc-950 text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-1.5"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Lihat Laporan Petugas Ini</span>
+                      </button>
                     </div>
-                  </>
-                )}
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* VIEW 3: REKAP PER GUDANG (Summary by Warehouse A - L on Selected Date) */}
+            {monitoringSubTab === 'SUMMARY_BY_WAREHOUSE' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-extrabold font-display text-white text-base flex items-center space-x-2">
+                      <Grid className="w-4 h-4 text-emerald-400" />
+                      <span>Rekap Status &amp; Riwayat Per Gudang</span>
+                    </h3>
+                    <p className="text-xs text-zinc-500">
+                      Rincian status kebersihan 12 area gudang beserta petugas yang bertanggung jawab pada periode terpilih.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {warehouseSummaries.map((ws) => (
+                    <div
+                      key={ws.warehouse.id}
+                      className="p-5 bg-zinc-900/30 border border-zinc-900 rounded-2xl space-y-3.5 hover:border-zinc-800 transition-all flex flex-col justify-between"
+                      id={`warehouse-summary-card-${ws.warehouse.id}`}
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-black text-white text-lg font-display">Gudang {ws.warehouse.id}</span>
+                          <span className={`text-[9px] font-extrabold uppercase px-2 py-0.5 rounded ${getStatusBadgeClass(ws.warehouse.status)}`}>
+                            {ws.warehouse.status === 'BERSIH' ? 'Bersih' : ws.warehouse.status === 'DALAM_PENGERJAAN' ? 'Proses' : 'Kotor'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400">{ws.warehouse.area}</p>
+
+                        <div className="p-2.5 bg-zinc-950/60 rounded-xl border border-zinc-900 space-y-1.5 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500 text-[11px]">Total Laporan:</span>
+                            <span className="font-bold text-white font-mono">{ws.totalReports}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500 text-[11px]">Petugas Pelaksana:</span>
+                            <span className="font-bold text-zinc-200 text-right truncate max-w-[120px]">
+                              {ws.cleaners.length > 0 ? ws.cleaners.join(', ') : '-'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWarehouseFilter(ws.warehouse.id);
+                          setMonitoringSubTab('REPORTS_AND_AREAS');
+                        }}
+                        className="w-full py-2 bg-zinc-850 hover:bg-emerald-500 hover:text-zinc-950 text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-1.5"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Filter Laporan Gudang {ws.warehouse.id}</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
 
