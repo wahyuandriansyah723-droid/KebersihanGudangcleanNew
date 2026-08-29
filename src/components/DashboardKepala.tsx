@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Grid,
@@ -41,7 +41,10 @@ import {
   Users,
   FileText,
   Layers,
-  Filter
+  Filter,
+  Briefcase,
+  CheckSquare,
+  CheckCheck
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -431,30 +434,161 @@ export default function DashboardKepala({
     };
   });
 
-  // Filter reports
-  const filteredReports = reports.filter(report => {
-    const matchesSearch = 
-      report.cleanerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      report.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      report.warehouse.toLowerCase().includes(searchTerm.toLowerCase());
+  // Comprehensive cleaner list incorporating users with PETUGAS_KEBERSIHAN role, plus any cleaner found in reports and tasks
+  const cleanersList = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; email: string; avatarUrl?: string }>();
     
-    const matchesWarehouse = warehouseFilter === 'ALL' || report.warehouse === warehouseFilter;
-    const matchesCleaner = cleanerFilter === 'ALL' || report.cleanerEmail === cleanerFilter || report.cleanerName === cleanerFilter;
-    const matchesStatus = statusFilter === 'ALL' || report.status === statusFilter;
-    const matchesPeriod = getIsReportInDateFilter(report.timestamp);
+    // 1. Users with role PETUGAS_KEBERSIHAN
+    users.forEach(u => {
+      if (u.role === 'PETUGAS_KEBERSIHAN') {
+        const key = (u.email || u.id || u.name).trim().toLowerCase();
+        map.set(key, {
+          id: u.id,
+          name: u.name || 'Petugas',
+          email: u.email || '',
+          avatarUrl: u.avatarUrl
+        });
+      }
+    });
 
-    return matchesSearch && matchesWarehouse && matchesCleaner && matchesStatus && matchesPeriod;
-  }).sort((a, b) => {
-    if (sortField === 'timestamp') {
-      const timeA = new Date(a.timestamp).getTime();
-      const timeB = new Date(b.timestamp).getTime();
-      return sortDirection === 'asc' ? timeA - timeB : timeB - timeA;
-    } else {
-      return sortDirection === 'asc' 
-        ? a.cleanerName.localeCompare(b.cleanerName)
-        : b.cleanerName.localeCompare(a.cleanerName);
-    }
-  });
+    // 2. Incorporate any cleaner in reports
+    reports.forEach(r => {
+      const emailKey = (r.cleanerEmail || '').trim().toLowerCase();
+      const nameKey = (r.cleanerName || '').trim().toLowerCase();
+      if (emailKey && !map.has(emailKey)) {
+        const existingByName = Array.from(map.values()).find(c => c.name.toLowerCase() === nameKey);
+        if (!existingByName) {
+          map.set(emailKey, {
+            id: r.cleanerEmail || r.cleanerName,
+            name: r.cleanerName || r.cleanerEmail || 'Petugas Kebersihan',
+            email: r.cleanerEmail || '',
+            avatarUrl: undefined
+          });
+        }
+      } else if (nameKey && !Array.from(map.values()).some(c => c.name.toLowerCase() === nameKey)) {
+        map.set(nameKey, {
+          id: r.cleanerName,
+          name: r.cleanerName,
+          email: r.cleanerEmail || '',
+          avatarUrl: undefined
+        });
+      }
+    });
+
+    // 3. Incorporate any cleaner in tasks
+    tasks.forEach(t => {
+      const emailKey = (t.assignedToEmail || '').trim().toLowerCase();
+      const nameKey = (t.assignedToName || '').trim().toLowerCase();
+      if (emailKey && !map.has(emailKey)) {
+        const existingByName = Array.from(map.values()).find(c => c.name.toLowerCase() === nameKey);
+        if (!existingByName) {
+          map.set(emailKey, {
+            id: t.assignedToUserId || t.assignedToEmail || t.assignedToName,
+            name: t.assignedToName || t.assignedToEmail || 'Petugas',
+            email: t.assignedToEmail || '',
+            avatarUrl: undefined
+          });
+        }
+      }
+    });
+
+    return Array.from(map.values());
+  }, [users, reports, tasks]);
+
+  // Selected cleaner object
+  const selectedCleanerObj = useMemo(() => {
+    if (cleanerFilter === 'ALL') return null;
+    const target = cleanerFilter.trim().toLowerCase();
+    return cleanersList.find(c => 
+      c.id.toLowerCase() === target || 
+      c.email.toLowerCase() === target || 
+      c.name.toLowerCase() === target
+    ) || {
+      id: cleanerFilter,
+      name: cleanerFilter,
+      email: cleanerFilter,
+      avatarUrl: undefined
+    };
+  }, [cleanerFilter, cleanersList]);
+
+  // Cleaner matching helper
+  const isCleanerMatch = (reportCleanerName?: string, reportCleanerEmail?: string) => {
+    if (cleanerFilter === 'ALL') return true;
+    if (!selectedCleanerObj) return true;
+
+    const selEmail = selectedCleanerObj.email.trim().toLowerCase();
+    const selName = selectedCleanerObj.name.trim().toLowerCase();
+    const selId = selectedCleanerObj.id.trim().toLowerCase();
+
+    const rEmail = (reportCleanerEmail || '').trim().toLowerCase();
+    const rName = (reportCleanerName || '').trim().toLowerCase();
+
+    if (selEmail && rEmail && (rEmail === selEmail || rEmail.includes(selEmail) || selEmail.includes(rEmail))) return true;
+    if (selName && rName && (rName === selName || rName.includes(selName) || selName.includes(rName))) return true;
+    if (selId && (rEmail === selId || rName === selId)) return true;
+
+    return false;
+  };
+
+  // Real-time search matching helper
+  const searchTokens = searchTerm.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const isSearchMatch = (report: Report) => {
+    if (searchTokens.length === 0) return true;
+    const corpus = [
+      report.cleanerName || '',
+      report.cleanerEmail || '',
+      report.warehouse || '',
+      `gudang ${report.warehouse || ''}`,
+      `gd ${report.warehouse || ''}`,
+      report.description || '',
+      report.status || '',
+      report.feedback || ''
+    ].join(' ').toLowerCase();
+
+    return searchTokens.every(token => corpus.includes(token));
+  };
+
+  // Filter reports
+  const filteredReports = useMemo(() => {
+    return reports.filter(report => {
+      const matchesSearch = isSearchMatch(report);
+      const matchesWarehouse = warehouseFilter === 'ALL' || report.warehouse === warehouseFilter;
+      const matchesCleaner = isCleanerMatch(report.cleanerName, report.cleanerEmail);
+      const matchesStatus = statusFilter === 'ALL' || report.status === statusFilter;
+      const matchesPeriod = getIsReportInDateFilter(report.timestamp);
+
+      return matchesSearch && matchesWarehouse && matchesCleaner && matchesStatus && matchesPeriod;
+    }).sort((a, b) => {
+      if (sortField === 'timestamp') {
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        return sortDirection === 'asc' ? timeA - timeB : timeB - timeA;
+      } else {
+        return sortDirection === 'asc' 
+          ? a.cleanerName.localeCompare(b.cleanerName)
+          : b.cleanerName.localeCompare(a.cleanerName);
+      }
+    });
+  }, [reports, searchTerm, warehouseFilter, cleanerFilter, statusFilter, dateFilterMode, customSelectedDate, sortField, sortDirection, selectedCleanerObj]);
+
+  // Tasks assigned to selected cleaner
+  const selectedCleanerTasks = useMemo(() => {
+    if (!selectedCleanerObj) return [];
+    const selEmail = selectedCleanerObj.email.trim().toLowerCase();
+    const selName = selectedCleanerObj.name.trim().toLowerCase();
+    const selId = selectedCleanerObj.id.trim().toLowerCase();
+
+    return tasks.filter(t => {
+      const tEmail = (t.assignedToEmail || '').trim().toLowerCase();
+      const tName = (t.assignedToName || '').trim().toLowerCase();
+      const tId = (t.assignedToUserId || '').trim().toLowerCase();
+
+      if (selEmail && tEmail && (tEmail === selEmail || tEmail.includes(selEmail))) return true;
+      if (selName && tName && (tName === selName || tName.includes(selName))) return true;
+      if (selId && (tId === selId || tEmail === selId)) return true;
+      return false;
+    });
+  }, [tasks, selectedCleanerObj]);
 
   // Calculate Metrics based on dynamicWarehouses and filteredReports
   const totalWarehouses = dynamicWarehouses.length;
@@ -469,69 +603,88 @@ export default function DashboardKepala({
   const rejectedReportsCount = dateFilteredAllReports.filter(r => r.status === 'REJECTED').length;
 
   // Cleaner summaries for the Sub-Tab
-  const cleanersList = users.filter(u => u.role === 'PETUGAS_KEBERSIHAN');
-  const cleanerSummaries = cleanersList.map(cleaner => {
-    const cleanerReports = reports.filter(r => 
-      (r.cleanerEmail === cleaner.email || r.cleanerName === cleaner.name) &&
-      getIsReportInDateFilter(r.timestamp) &&
-      (warehouseFilter === 'ALL' || r.warehouse === warehouseFilter)
-    );
+  const cleanerSummaries = useMemo(() => {
+    return cleanersList.map(cleaner => {
+      const selEmail = cleaner.email.trim().toLowerCase();
+      const selName = cleaner.name.trim().toLowerCase();
 
-    const approvedCount = cleanerReports.filter(r => r.status === 'APPROVED').length;
-    const pendingCount = cleanerReports.filter(r => r.status === 'PENDING').length;
-    const rejectedCount = cleanerReports.filter(r => r.status === 'REJECTED').length;
-    const distinctWarehouses = Array.from(new Set(cleanerReports.map(r => r.warehouse))).sort();
+      const cleanerReports = reports.filter(r => {
+        const rEmail = (r.cleanerEmail || '').trim().toLowerCase();
+        const rName = (r.cleanerName || '').trim().toLowerCase();
+        const isMatch = (selEmail && (rEmail === selEmail || rEmail.includes(selEmail))) ||
+                        (selName && (rName === selName || rName.includes(selName)));
+        return isMatch && getIsReportInDateFilter(r.timestamp) && (warehouseFilter === 'ALL' || r.warehouse === warehouseFilter);
+      });
 
-    let attendanceStatus: 'HADIR' | 'SELESAI_SHIFT' | 'BELUM_ABSEN' = 'BELUM_ABSEN';
-    let attendanceTime: string | null = null;
-    if (isSingleDateMode && effectiveSingleDateStr) {
-      const att = attendanceList.filter(a => 
-        (a.userId === cleaner.id || a.userEmail === cleaner.email) &&
-        a.date === effectiveSingleDateStr
-      ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const approvedCount = cleanerReports.filter(r => r.status === 'APPROVED').length;
+      const pendingCount = cleanerReports.filter(r => r.status === 'PENDING').length;
+      const rejectedCount = cleanerReports.filter(r => r.status === 'REJECTED').length;
+      const distinctWarehouses = Array.from(new Set(cleanerReports.map(r => r.warehouse))).sort();
 
-      if (att.some(a => a.type === 'KELUAR')) {
-        attendanceStatus = 'SELESAI_SHIFT';
-        attendanceTime = att.find(a => a.type === 'KELUAR')?.time || null;
-      } else if (att.some(a => a.type === 'MASUK')) {
-        attendanceStatus = 'HADIR';
-        attendanceTime = att.find(a => a.type === 'MASUK')?.time || null;
+      let attendanceStatus: 'HADIR' | 'SELESAI_SHIFT' | 'BELUM_ABSEN' = 'BELUM_ABSEN';
+      let attendanceTime: string | null = null;
+      if (isSingleDateMode && effectiveSingleDateStr) {
+        const att = attendanceList.filter(a => {
+          const aEmail = (a.userEmail || '').trim().toLowerCase();
+          const aId = (a.userId || '').trim().toLowerCase();
+          return (aEmail === selEmail || aId === cleaner.id.toLowerCase()) && a.date === effectiveSingleDateStr;
+        }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        if (att.some(a => a.type === 'KELUAR')) {
+          attendanceStatus = 'SELESAI_SHIFT';
+          attendanceTime = att.find(a => a.type === 'KELUAR')?.time || null;
+        } else if (att.some(a => a.type === 'MASUK')) {
+          attendanceStatus = 'HADIR';
+          attendanceTime = att.find(a => a.type === 'MASUK')?.time || null;
+        }
       }
-    }
 
-    return {
-      cleaner,
-      totalReports: cleanerReports.length,
-      approvedCount,
-      pendingCount,
-      rejectedCount,
-      distinctWarehouses,
-      reports: cleanerReports,
-      attendanceStatus,
-      attendanceTime
-    };
-  });
+      // Cleaner's assigned tasks
+      const cleanerAssignedTasks = tasks.filter(t => {
+        const tEmail = (t.assignedToEmail || '').trim().toLowerCase();
+        const tName = (t.assignedToName || '').trim().toLowerCase();
+        return (selEmail && (tEmail === selEmail || tEmail.includes(selEmail))) ||
+               (selName && (tName === selName || tName.includes(selName)));
+      });
+
+      return {
+        cleaner,
+        totalReports: cleanerReports.length,
+        approvedCount,
+        pendingCount,
+        rejectedCount,
+        distinctWarehouses,
+        reports: cleanerReports,
+        attendanceStatus,
+        attendanceTime,
+        assignedTasksCount: cleanerAssignedTasks.length,
+        completedTasksCount: cleanerAssignedTasks.filter(t => t.status === 'COMPLETED').length
+      };
+    });
+  }, [cleanersList, reports, warehouseFilter, dateFilterMode, customSelectedDate, isSingleDateMode, effectiveSingleDateStr, attendanceList, tasks]);
 
   // Warehouse summaries for the Sub-Tab
-  const warehouseSummaries = dynamicWarehouses.map(w => {
-    const wReports = reports.filter(r => 
-      r.warehouse === w.id &&
-      getIsReportInDateFilter(r.timestamp) &&
-      (cleanerFilter === 'ALL' || r.cleanerEmail === cleanerFilter || r.cleanerName === cleanerFilter)
-    );
+  const warehouseSummaries = useMemo(() => {
+    return dynamicWarehouses.map(w => {
+      const wReports = reports.filter(r => 
+        r.warehouse === w.id &&
+        getIsReportInDateFilter(r.timestamp) &&
+        isCleanerMatch(r.cleanerName, r.cleanerEmail)
+      );
 
-    const distinctCleaners = Array.from(new Set(wReports.map(r => r.cleanerName)));
+      const distinctCleaners = Array.from(new Set(wReports.map(r => r.cleanerName).filter(Boolean)));
 
-    return {
-      warehouse: w,
-      totalReports: wReports.length,
-      approvedCount: wReports.filter(r => r.status === 'APPROVED').length,
-      pendingCount: wReports.filter(r => r.status === 'PENDING').length,
-      rejectedCount: wReports.filter(r => r.status === 'REJECTED').length,
-      cleaners: distinctCleaners,
-      reports: wReports
-    };
-  });
+      return {
+        warehouse: w,
+        totalReports: wReports.length,
+        approvedCount: wReports.filter(r => r.status === 'APPROVED').length,
+        pendingCount: wReports.filter(r => r.status === 'PENDING').length,
+        rejectedCount: wReports.filter(r => r.status === 'REJECTED').length,
+        cleaners: distinctCleaners,
+        reports: wReports
+      };
+    });
+  }, [dynamicWarehouses, reports, dateFilterMode, customSelectedDate, cleanerFilter, selectedCleanerObj]);
 
   const getStatusBadgeClass = (status: Warehouse['status']) => {
     switch (status) {
@@ -1123,17 +1276,17 @@ export default function DashboardKepala({
                           <span>Daftar Laporan &amp; Pemantauan</span>
                           {warehouseFilter !== 'ALL' && (
                             <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold font-mono uppercase">
-                              Gudang {warehouseFilter} Only
+                              Gudang {warehouseFilter}
                             </span>
                           )}
-                          {cleanerFilter !== 'ALL' && (
+                          {cleanerFilter !== 'ALL' && selectedCleanerObj && (
                             <span className="text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded font-bold font-mono">
-                              Petugas: {cleanersList.find(c => c.id === cleanerFilter || c.email === cleanerFilter || c.name === cleanerFilter)?.name || cleanerFilter}
+                              Petugas: {selectedCleanerObj.name}
                             </span>
                           )}
                         </h3>
                         <p className="text-xs text-zinc-500 mt-0.5">
-                          Menampilkan hasil filter tanggal, petugas, gudang, dan status laporan.
+                          Pantau pekerjaan, verifikasi laporan foto, dan periksa progres tugas petugas kebersihan.
                         </p>
                       </div>
 
@@ -1150,27 +1303,121 @@ export default function DashboardKepala({
                             className="px-3 py-1.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-xs font-semibold rounded-lg border border-zinc-850 flex items-center space-x-1 cursor-pointer transition-colors"
                           >
                             <RefreshCw className="w-3.5 h-3.5" />
-                            <span>Reset Filter</span>
+                            <span>Reset Semua Filter</span>
                           </button>
                         )}
                       </div>
                     </div>
 
+                    {/* Quick Cleaner Selector Chips Bar */}
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-zinc-400 font-bold flex items-center space-x-1.5">
+                          <Users className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Pilih Petugas (Filter Cepat):</span>
+                        </span>
+                        {cleanerFilter !== 'ALL' && (
+                          <button
+                            type="button"
+                            onClick={() => setCleanerFilter('ALL')}
+                            className="text-[11px] text-cyan-400 hover:underline font-semibold cursor-pointer"
+                          >
+                            Tampilkan Semua ({cleanersList.length} Petugas)
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center space-x-2 overflow-x-auto pb-1.5 scrollbar-thin scrollbar-thumb-zinc-800">
+                        {/* All Cleaners Pill */}
+                        <button
+                          type="button"
+                          onClick={() => setCleanerFilter('ALL')}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center space-x-1.5 cursor-pointer shrink-0 ${
+                            cleanerFilter === 'ALL'
+                              ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20 ring-1 ring-emerald-400'
+                              : 'bg-zinc-950 text-zinc-400 hover:text-zinc-200 border border-zinc-850 hover:border-zinc-700'
+                          }`}
+                        >
+                          <span>Semua Petugas</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-extrabold ${
+                            cleanerFilter === 'ALL' ? 'bg-zinc-950/20 text-zinc-950' : 'bg-zinc-850 text-zinc-400'
+                          }`}>
+                            {cleanersList.length}
+                          </span>
+                        </button>
+
+                        {/* Individual Cleaner Pills */}
+                        {cleanersList.map((cleaner) => {
+                          const isSelected = 
+                            cleanerFilter.toLowerCase() === cleaner.email.toLowerCase() || 
+                            cleanerFilter.toLowerCase() === cleaner.name.toLowerCase() ||
+                            cleanerFilter.toLowerCase() === cleaner.id.toLowerCase();
+                          
+                          // Count reports on current date filter for this cleaner
+                          const cleanerReportsCount = reports.filter(r => 
+                            (r.cleanerEmail?.toLowerCase() === cleaner.email.toLowerCase() || r.cleanerName?.toLowerCase() === cleaner.name.toLowerCase()) &&
+                            getIsReportInDateFilter(r.timestamp)
+                          ).length;
+
+                          return (
+                            <button
+                              key={cleaner.id || cleaner.email || cleaner.name}
+                              type="button"
+                              onClick={() => {
+                                setCleanerFilter(isSelected ? 'ALL' : (cleaner.email || cleaner.name));
+                              }}
+                              className={`px-2.5 py-1 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center space-x-2 cursor-pointer shrink-0 ${
+                                isSelected
+                                  ? 'bg-cyan-500 text-zinc-950 shadow-md shadow-cyan-500/20 ring-2 ring-cyan-400'
+                                  : 'bg-zinc-950 text-zinc-300 hover:text-white border border-zinc-850 hover:border-zinc-700'
+                              }`}
+                              title={`Klik untuk melihat seluruh pekerjaan ${cleaner.name}`}
+                            >
+                              <img
+                                src={cleaner.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300'}
+                                alt={cleaner.name}
+                                className="w-5 h-5 rounded-full object-cover border border-zinc-800 shrink-0"
+                                referrerPolicy="no-referrer"
+                              />
+                              <span className="truncate max-w-[120px]">{cleaner.name}</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-extrabold ${
+                                isSelected 
+                                  ? 'bg-zinc-950/20 text-zinc-950' 
+                                  : cleanerReportsCount > 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-850 text-zinc-500'
+                              }`}>
+                                {cleanerReportsCount} Lap
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
                     {/* Filter Inputs Grid: Search, Cleaner, Warehouse, Status */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                      {/* Search keyword */}
-                      <div className="relative">
+                      {/* Search keyword with instant clear button */}
+                      <div className="relative flex items-center">
                         <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-zinc-500 pointer-events-none">
                           <Search className="w-4 h-4" />
                         </span>
                         <input
                           type="text"
-                          placeholder="Cari petugas / keterangan..."
+                          placeholder="Cari petugas, gudang, keterangan..."
                           value={searchTerm}
                           onChange={(e) => setSearchTerm(e.target.value)}
-                          className="w-full pl-10 pr-4 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/20 rounded-xl text-xs text-zinc-200 placeholder-zinc-700 outline-none transition-all"
+                          className="w-full pl-10 pr-9 py-2 bg-zinc-950 border border-zinc-900 hover:border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/20 rounded-xl text-xs text-zinc-200 placeholder-zinc-700 outline-none transition-all"
                           id="search-reports-input"
                         />
+                        {searchTerm && (
+                          <button
+                            type="button"
+                            onClick={() => setSearchTerm('')}
+                            className="absolute right-2.5 p-1 text-zinc-500 hover:text-white rounded-md cursor-pointer transition-colors"
+                            title="Hapus pencarian"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
 
                       {/* Filter by Cleaner (Per Petugas) */}
@@ -1182,9 +1429,9 @@ export default function DashboardKepala({
                           className="w-full pl-18 pr-4 py-2 bg-zinc-950 border border-zinc-900 focus:border-emerald-500 rounded-xl text-xs text-zinc-200 outline-none appearance-none cursor-pointer transition-all truncate"
                           id="cleaner-filter-select"
                         >
-                          <option value="ALL">Semua Petugas</option>
+                          <option value="ALL">Semua Petugas ({cleanersList.length})</option>
                           {cleanersList.map((cleaner) => (
-                            <option key={cleaner.id} value={cleaner.email}>
+                            <option key={cleaner.id || cleaner.email} value={cleaner.email || cleaner.name}>
                               {cleaner.name}
                             </option>
                           ))}
@@ -1223,6 +1470,185 @@ export default function DashboardKepala({
                         </select>
                       </div>
                     </div>
+
+                    {/* DEDICATED CLEANER WORK & TASKS PANEL (When a cleaner is selected) */}
+                    {cleanerFilter !== 'ALL' && selectedCleanerObj && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="p-4 bg-zinc-900/50 border border-cyan-500/30 rounded-2xl space-y-3.5 shadow-lg shadow-cyan-950/20"
+                        id="selected-cleaner-dedicated-panel"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-zinc-800/80">
+                          <div className="flex items-center space-x-3">
+                            <img
+                              src={selectedCleanerObj.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300'}
+                              alt={selectedCleanerObj.name}
+                              className="w-12 h-12 rounded-full object-cover border-2 border-cyan-400 shrink-0"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <h4 className="font-extrabold text-white text-base font-display">
+                                  {selectedCleanerObj.name}
+                                </h4>
+                                <span className="px-2 py-0.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded text-[10px] font-bold font-mono">
+                                  Petugas Terpilih
+                                </span>
+                              </div>
+                              <span className="text-xs text-zinc-400 font-mono block">
+                                {selectedCleanerObj.email || 'Email tidak terdata'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            {/* Attendance badge for this cleaner */}
+                            {(() => {
+                              const attToday = attendanceList.filter(a => 
+                                (a.userEmail?.toLowerCase() === selectedCleanerObj.email.toLowerCase() || a.userId?.toLowerCase() === selectedCleanerObj.id.toLowerCase()) &&
+                                a.date === (effectiveSingleDateStr || todayStr)
+                              ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+                              const hasKeluar = attToday.some(a => a.type === 'KELUAR');
+                              const hasMasuk = attToday.some(a => a.type === 'MASUK');
+                              const masukTime = attToday.find(a => a.type === 'MASUK')?.time;
+                              const keluarTime = attToday.find(a => a.type === 'KELUAR')?.time;
+
+                              return (
+                                <div className="px-3 py-1.5 bg-zinc-950 rounded-xl border border-zinc-800 text-xs flex items-center space-x-1.5">
+                                  <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                                  <span className="text-zinc-400">Absensi:</span>
+                                  <span className={`font-bold font-mono ${
+                                    hasKeluar ? 'text-cyan-400' : hasMasuk ? 'text-emerald-400' : 'text-zinc-500'
+                                  }`}>
+                                    {hasKeluar ? `Selesai Shift (${keluarTime || ''} WIB)` : hasMasuk ? `Hadir (${masukTime || ''} WIB)` : 'Belum Absen'}
+                                  </span>
+                                </div>
+                              );
+                            })()}
+
+                            <button
+                              type="button"
+                              onClick={() => setCleanerFilter('ALL')}
+                              className="px-3 py-1.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 text-xs font-bold rounded-xl border border-zinc-700/50 flex items-center space-x-1 cursor-pointer transition-colors"
+                            >
+                              <X className="w-3.5 h-3.5 text-zinc-400" />
+                              <span>Tutup Pilihan</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Cleaner Job Metrics Breakdown */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                          {/* 1. Warehouses Cleaned */}
+                          <div className="p-3 bg-zinc-950/60 rounded-xl border border-zinc-850/60 space-y-1.5">
+                            <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider block flex items-center space-x-1">
+                              <LayoutDashboard className="w-3 h-3 text-emerald-400" />
+                              <span>Area Gudang Dikerjakan</span>
+                            </span>
+                            {(() => {
+                              const distinctWhs = Array.from(new Set(filteredReports.map(r => r.warehouse))).sort();
+                              if (distinctWhs.length === 0) {
+                                return <span className="text-zinc-600 text-xs italic block">Belum ada laporan area pada filter tanggal ini</span>;
+                              }
+                              return (
+                                <div className="flex flex-wrap gap-1">
+                                  {distinctWhs.map(wh => (
+                                    <span key={wh} className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold rounded text-[11px]">
+                                      Gudang {wh}
+                                    </span>
+                                  ))}
+                                </div>
+                              );
+                            })()}
+                          </div>
+
+                          {/* 2. Reports Summary */}
+                          <div className="p-3 bg-zinc-950/60 rounded-xl border border-zinc-850/60 space-y-1.5">
+                            <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider block flex items-center space-x-1">
+                              <FileText className="w-3 h-3 text-cyan-400" />
+                              <span>Status Laporan Kebersihan</span>
+                            </span>
+                            <div className="flex items-center space-x-3 pt-0.5">
+                              <div>
+                                <span className="text-[10px] text-zinc-500 block">Total</span>
+                                <span className="font-extrabold text-white font-mono text-sm">{filteredReports.length}</span>
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-emerald-500 block">Disetujui</span>
+                                <span className="font-extrabold text-emerald-400 font-mono text-sm">
+                                  {filteredReports.filter(r => r.status === 'APPROVED').length}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-amber-500 block">Menunggu</span>
+                                <span className="font-extrabold text-amber-400 font-mono text-sm">
+                                  {filteredReports.filter(r => r.status === 'PENDING').length}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-rose-500 block">Ditolak</span>
+                                <span className="font-extrabold text-rose-400 font-mono text-sm">
+                                  {filteredReports.filter(r => r.status === 'REJECTED').length}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* 3. Assigned Checklist Tasks */}
+                          <div className="p-3 bg-zinc-950/60 rounded-xl border border-zinc-850/60 space-y-1.5">
+                            <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider block flex items-center space-x-1">
+                              <ClipboardList className="w-3 h-3 text-amber-400" />
+                              <span>Checklist Tugas Terjadwal</span>
+                            </span>
+                            <div className="flex items-baseline space-x-2 pt-0.5">
+                              <span className="text-sm font-extrabold font-mono text-amber-400">
+                                {selectedCleanerTasks.filter(t => t.status === 'COMPLETED').length} / {selectedCleanerTasks.length}
+                              </span>
+                              <span className="text-[11px] text-zinc-400">Tugas Selesai</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* List of Tasks Assigned to Selected Cleaner */}
+                        {selectedCleanerTasks.length > 0 && (
+                          <div className="p-3 bg-zinc-950/40 rounded-xl border border-zinc-850/50 space-y-2">
+                            <span className="text-[11px] font-bold text-zinc-300 flex items-center space-x-1.5">
+                              <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Daftar Tugas Khusus Petugas Ini:</span>
+                            </span>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {selectedCleanerTasks.map(t => (
+                                <div
+                                  key={t.id}
+                                  className="p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg flex items-center justify-between text-xs"
+                                >
+                                  <div className="space-y-0.5">
+                                    <div className="flex items-center space-x-1.5">
+                                      <span className="px-1.5 py-0.2 bg-emerald-950/40 text-emerald-400 border border-emerald-500/20 rounded font-bold font-mono text-[10px]">
+                                        GD {t.warehouse}
+                                      </span>
+                                      <span className="font-bold text-white text-xs">{t.taskName}</span>
+                                    </div>
+                                    {t.description && (
+                                      <p className="text-[11px] text-zinc-400 truncate max-w-[240px]">{t.description}</p>
+                                    )}
+                                  </div>
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                                    t.status === 'COMPLETED'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                  }`}>
+                                    {t.status === 'COMPLETED' ? 'Selesai' : 'Belum Dikerjakan'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
                   </div>
 
                   {/* Reports List / Table Grid */}
@@ -1557,13 +1983,13 @@ export default function DashboardKepala({
                       <button
                         type="button"
                         onClick={() => {
-                          setCleanerFilter(item.cleaner.email);
+                          setCleanerFilter(item.cleaner.email || item.cleaner.name || item.cleaner.id);
                           setMonitoringSubTab('REPORTS_AND_AREAS');
                         }}
-                        className="w-full py-2 bg-zinc-850 hover:bg-emerald-500 hover:text-zinc-950 text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-1.5"
+                        className="w-full py-2.5 bg-zinc-850 hover:bg-cyan-500 hover:text-zinc-950 text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-1.5 shadow-sm"
                       >
                         <Eye className="w-3.5 h-3.5" />
-                        <span>Lihat Laporan Petugas Ini</span>
+                        <span>Lihat Pekerjaan &amp; Laporan Petugas Ini</span>
                       </button>
                     </div>
                   ))}
