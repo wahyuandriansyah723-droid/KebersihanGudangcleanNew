@@ -398,10 +398,10 @@ export default function App() {
     });
   };
 
-  const handleUpdateUser = async (userId: string, newName: string) => {
+  const handleUpdateUser = async (userId: string, updates: { name?: string; avatarUrl?: string }) => {
     const userToUpdate = users.find(u => u.id === userId);
     if (!userToUpdate) return;
-    const trimmedName = newName.trim();
+    const trimmedName = updates.name !== undefined ? updates.name.trim() : userToUpdate.name;
     if (!trimmedName) {
       showToast("Nama petugas tidak boleh kosong.", "error");
       return;
@@ -411,7 +411,8 @@ export default function App() {
       const oldName = userToUpdate.name;
       const updatedUser: User = {
         ...userToUpdate,
-        name: trimmedName
+        name: trimmedName,
+        avatarUrl: updates.avatarUrl !== undefined ? updates.avatarUrl : userToUpdate.avatarUrl
       };
 
       // 1. Update user in Firestore
@@ -422,43 +423,43 @@ export default function App() {
         setCurrentUser(updatedUser);
       }
 
-      // 3. Update assignedToName in tasks if assignedToUserId or email matches
-      const matchingTasks = tasks.filter(t => t.assignedToUserId === userId || t.assignedToEmail === userToUpdate.email);
-      for (const task of matchingTasks) {
-        if (task.assignedToName !== trimmedName) {
-          await saveTaskToFirestore({
-            ...task,
-            assignedToName: trimmedName
-          });
+      // 3. If name changed, synchronize in tasks, reports, and attendance records
+      if (trimmedName !== oldName) {
+        const matchingTasks = tasks.filter(t => t.assignedToUserId === userId || t.assignedToEmail === userToUpdate.email);
+        for (const task of matchingTasks) {
+          if (task.assignedToName !== trimmedName) {
+            await saveTaskToFirestore({
+              ...task,
+              assignedToName: trimmedName
+            });
+          }
+        }
+
+        const matchingReports = reports.filter(r => r.cleanerEmail === userToUpdate.email);
+        for (const rep of matchingReports) {
+          if (rep.cleanerName !== trimmedName) {
+            await saveReportToFirestore({
+              ...rep,
+              cleanerName: trimmedName
+            });
+          }
+        }
+
+        const matchingAttendance = attendanceList.filter(a => a.userId === userId || a.userEmail === userToUpdate.email);
+        for (const att of matchingAttendance) {
+          if (att.userName !== trimmedName) {
+            await saveAttendanceToFirestore({
+              ...att,
+              userName: trimmedName
+            });
+          }
         }
       }
 
-      // 4. Update cleanerName in reports created by this cleaner
-      const matchingReports = reports.filter(r => r.cleanerEmail === userToUpdate.email);
-      for (const rep of matchingReports) {
-        if (rep.cleanerName !== trimmedName) {
-          await saveReportToFirestore({
-            ...rep,
-            cleanerName: trimmedName
-          });
-        }
-      }
-
-      // 5. Update userName in attendance records
-      const matchingAttendance = attendanceList.filter(a => a.userId === userId || a.userEmail === userToUpdate.email);
-      for (const att of matchingAttendance) {
-        if (att.userName !== trimmedName) {
-          await saveAttendanceToFirestore({
-            ...att,
-            userName: trimmedName
-          });
-        }
-      }
-
-      showToast(`Nama petugas berhasil diubah dari "${oldName}" menjadi "${trimmedName}".`, 'success');
+      showToast(`Profil petugas "${trimmedName}" berhasil diperbarui.`, 'success');
     } catch (err) {
-      console.error("Failed to update user name:", err);
-      showToast("Gagal memperbarui nama petugas.", "error");
+      console.error("Failed to update user profile:", err);
+      showToast("Gagal memperbarui profil petugas.", "error");
       throw err;
     }
   };

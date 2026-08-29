@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Grid,
@@ -30,7 +30,12 @@ import {
   Download,
   Settings,
   Edit2,
-  Pencil
+  Pencil,
+  Camera,
+  Upload,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  RotateCcw
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -38,6 +43,54 @@ import { Report, Warehouse, User, Task, Attendance, SystemSettings } from '../ty
 import { defaultSystemSettings } from '../mockData';
 import ExportReportsModal from './ExportReportsModal';
 import DashboardSettings from './DashboardSettings';
+
+const PRESET_AVATARS = [
+  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&q=80&w=300',
+  'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?auto=format&fit=crop&q=80&w=300',
+];
+
+const compressAvatar = (base64Str: string, maxDim = 400, quality = 0.8): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+      if (width > height) {
+        if (width > maxDim) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        }
+      } else {
+        if (height > maxDim) {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } else {
+        resolve(base64Str);
+      }
+    };
+    img.onerror = () => {
+      resolve(base64Str);
+    };
+  });
+};
 
 interface DashboardKepalaProps {
   currentUser: User;
@@ -61,7 +114,7 @@ interface DashboardKepalaProps {
   onDeleteTask: (id: string) => void;
   onDeleteReport: (id: string) => void;
   onDeleteUser: (id: string) => void;
-  onUpdateUser?: (id: string, newName: string) => Promise<void> | void;
+  onUpdateUser?: (id: string, updates: { name?: string; avatarUrl?: string }) => Promise<void> | void;
   onDeleteAttendance?: (ids: string[]) => void;
   onSaveSettings?: (settings: SystemSettings) => Promise<void>;
   onUpdateWarehouseArea?: (id: string, newArea: string) => Promise<void>;
@@ -100,8 +153,12 @@ export default function DashboardKepala({
   const [cleanerSearch, setCleanerSearch] = useState('');
   const [editingCleaner, setEditingCleaner] = useState<User | null>(null);
   const [cleanerNameInput, setCleanerNameInput] = useState('');
+  const [cleanerAvatarInput, setCleanerAvatarInput] = useState('');
+  const [avatarTab, setAvatarTab] = useState<'UPLOAD' | 'PRESET' | 'URL'>('UPLOAD');
+  const [customUrlInput, setCustomUrlInput] = useState('');
   const [isUpdatingCleaner, setIsUpdatingCleaner] = useState(false);
   const [cleanerUpdateError, setCleanerUpdateError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Attendance logbook filters & state
   const [attendanceSearch, setAttendanceSearch] = useState('');
@@ -350,13 +407,65 @@ export default function DashboardKepala({
     setFeedbackText('');
   };
 
-  const handleOpenEditCleaner = (cleaner: User) => {
+  const handleOpenEditCleaner = (cleaner: User, defaultTab: 'UPLOAD' | 'PRESET' | 'URL' = 'UPLOAD') => {
     setEditingCleaner(cleaner);
     setCleanerNameInput(cleaner.name);
+    setCleanerAvatarInput(cleaner.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300');
+    setAvatarTab(defaultTab);
+    setCustomUrlInput('');
     setCleanerUpdateError('');
   };
 
-  const handleSaveCleanerName = async (e: React.FormEvent) => {
+  const handleAvatarFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setCleanerUpdateError('Format berkas harus berupa gambar (JPG, PNG, WEBP).');
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setCleanerUpdateError('Ukuran berkas gambar maksimal 10MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      try {
+        const rawBase64 = reader.result as string;
+        const compressed = await compressAvatar(rawBase64, 400, 0.82);
+        setCleanerAvatarInput(compressed);
+        setCleanerUpdateError('');
+      } catch (err) {
+        console.error('Error processing avatar image:', err);
+        setCleanerUpdateError('Gagal memproses gambar avatar.');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleApplyCustomUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedUrl = customUrlInput.trim();
+    if (!trimmedUrl) {
+      setCleanerUpdateError('Masukkan URL gambar terlebih dahulu.');
+      return;
+    }
+    if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://') && !trimmedUrl.startsWith('data:image')) {
+      setCleanerUpdateError('URL harus diawali dengan http:// atau https://');
+      return;
+    }
+    setCleanerAvatarInput(trimmedUrl);
+    setCleanerUpdateError('');
+  };
+
+  const handleResetAvatar = () => {
+    setCleanerAvatarInput('https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300');
+    setCleanerUpdateError('');
+  };
+
+  const handleSaveCleanerProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingCleaner) return;
     const trimmed = cleanerNameInput.trim();
@@ -373,12 +482,15 @@ export default function DashboardKepala({
       setIsUpdatingCleaner(true);
       setCleanerUpdateError('');
       if (onUpdateUser) {
-        await onUpdateUser(editingCleaner.id, trimmed);
+        await onUpdateUser(editingCleaner.id, {
+          name: trimmed,
+          avatarUrl: cleanerAvatarInput || undefined
+        });
       }
       setEditingCleaner(null);
     } catch (err) {
-      console.error('Failed to update cleaner name:', err);
-      setCleanerUpdateError('Gagal memperbarui nama petugas. Silakan coba lagi.');
+      console.error('Failed to update cleaner profile:', err);
+      setCleanerUpdateError('Gagal memperbarui data petugas. Silakan coba lagi.');
     } finally {
       setIsUpdatingCleaner(false);
     }
@@ -1199,15 +1311,25 @@ export default function DashboardKepala({
                           className="p-4.5 bg-zinc-950/40 border border-zinc-900 rounded-xl flex flex-col justify-between hover:border-zinc-800 transition-all space-y-4 group"
                         >
                           <div className="flex items-start justify-between">
-                            <div className="flex items-center space-x-3">
-                              <div className="relative">
+                            <div className="flex items-center space-x-3.5">
+                              <div className="relative group/avatar cursor-pointer" onClick={() => handleOpenEditCleaner(u, 'UPLOAD')}>
                                 <img
                                   src={u.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150'}
                                   alt={u.name}
-                                  className="w-12 h-12 rounded-full object-cover border border-zinc-800 shadow-md"
+                                  className="w-13 h-13 rounded-full object-cover border-2 border-zinc-800 group-hover/avatar:border-emerald-500 shadow-md transition-all"
                                   referrerPolicy="no-referrer"
                                 />
-                                <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-zinc-950 rounded-full" />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEditCleaner(u, 'UPLOAD');
+                                  }}
+                                  className="absolute -bottom-1 -right-1 p-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-full shadow-lg border-2 border-zinc-950 transition-all cursor-pointer group-hover/avatar:scale-110"
+                                  title="Ganti Foto Petugas"
+                                >
+                                  <Camera className="w-3 h-3" />
+                                </button>
                               </div>
                               <div>
                                 <h4 className="font-bold text-white text-sm group-hover:text-emerald-400 transition-colors">
@@ -1243,12 +1365,12 @@ export default function DashboardKepala({
                           <div className="pt-2 border-t border-zinc-900 flex items-center justify-between gap-2">
                             <button
                               type="button"
-                              onClick={() => handleOpenEditCleaner(u)}
+                              onClick={() => handleOpenEditCleaner(u, 'UPLOAD')}
                               className="flex-1 py-1.5 px-3 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-zinc-950 border border-emerald-500/20 hover:border-emerald-500 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1.5 transition-all cursor-pointer shadow-sm"
-                              title="Edit Nama Petugas"
+                              title="Edit Profil dan Foto Petugas"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
-                              <span>Edit Nama</span>
+                              <span>Edit Profil & Foto</span>
                             </button>
 
                             <button
@@ -1919,7 +2041,7 @@ export default function DashboardKepala({
         )}
       </AnimatePresence>
 
-      {/* Edit Cleaner Name Modal */}
+      {/* Edit Cleaner Profile & Photo Modal */}
       <AnimatePresence>
         {editingCleaner && (
           <div className="fixed inset-0 z-110 flex items-center justify-center p-4">
@@ -1938,17 +2060,17 @@ export default function DashboardKepala({
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative w-full max-w-md bg-[#12131a] border border-zinc-800 rounded-2xl shadow-2xl p-6 z-10 flex flex-col"
+              className="relative w-full max-w-lg bg-[#12131a] border border-zinc-800 rounded-2xl shadow-2xl p-6 z-10 flex flex-col max-h-[90vh] overflow-y-auto"
               id="edit-cleaner-modal"
             >
               {/* Modal Header */}
               <div className="flex items-center justify-between pb-4 border-b border-zinc-800 mb-5">
                 <div className="flex items-center space-x-2.5 text-emerald-400">
                   <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
-                    <Edit2 className="w-5 h-5" />
+                    <Camera className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-white text-base">Edit Nama Petugas</h3>
+                    <h3 className="font-bold text-white text-base">Edit Profil & Foto Petugas</h3>
                     <span className="text-[10px] text-zinc-400 block font-mono">
                       {editingCleaner.email}
                     </span>
@@ -1965,30 +2087,199 @@ export default function DashboardKepala({
               </div>
 
               {/* Edit Cleaner Form */}
-              <form onSubmit={handleSaveCleanerName} className="space-y-4">
-                {/* Profile Snapshot */}
-                <div className="flex items-center space-x-3.5 p-3.5 bg-zinc-950/60 border border-zinc-900 rounded-xl">
-                  <img
-                    src={editingCleaner.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150'}
-                    alt={editingCleaner.name}
-                    className="w-12 h-12 rounded-full object-cover border border-zinc-800"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div>
-                    <span className="text-[10px] text-zinc-500 font-mono uppercase block">Identitas Akun</span>
-                    <span className="font-bold text-white text-sm block">{editingCleaner.name}</span>
-                    <span className="text-[10px] text-emerald-400 block font-medium">Petugas Kebersihan Gudang</span>
+              <form onSubmit={handleSaveCleanerProfile} className="space-y-5">
+                {/* Live Preview Card */}
+                <div className="p-4 bg-zinc-950/70 border border-zinc-800/80 rounded-2xl flex items-center justify-between gap-4">
+                  <div className="flex items-center space-x-3.5">
+                    <div className="relative group/live">
+                      <img
+                        src={cleanerAvatarInput || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150'}
+                        alt={cleanerNameInput || editingCleaner.name}
+                        className="w-16 h-16 rounded-full object-cover border-2 border-emerald-500 shadow-lg"
+                        referrerPolicy="no-referrer"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="absolute inset-0 bg-black/50 text-white rounded-full flex flex-col items-center justify-center opacity-0 group-hover/live:opacity-100 transition-opacity cursor-pointer text-[9px] font-bold"
+                        title="Klik untuk unggah foto baru"
+                      >
+                        <Camera className="w-4 h-4 mb-0.5" />
+                        <span>Ganti</span>
+                      </button>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-zinc-500 font-mono uppercase block">Pratinjau Profil</span>
+                      <h4 className="font-bold text-white text-sm block truncate max-w-[180px]">
+                        {cleanerNameInput.trim() || editingCleaner.name}
+                      </h4>
+                      <span className="text-[10px] text-emerald-400 font-medium block mt-0.5">
+                        Petugas Kebersihan Gudang
+                      </span>
+                    </div>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={handleResetAvatar}
+                    className="p-2 hover:bg-zinc-850 text-zinc-500 hover:text-zinc-300 rounded-xl transition-all text-[11px] flex items-center space-x-1 cursor-pointer border border-zinc-850"
+                    title="Kembalikan ke foto bawaan"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Reset Foto</span>
+                  </button>
                 </div>
 
-                {/* Input Field */}
+                {/* Photo Selector Section */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-zinc-300">
+                      Foto Profil Petugas
+                    </label>
+                    <span className="text-[10px] text-zinc-500 font-mono">Pilih metode penggantian</span>
+                  </div>
+
+                  {/* Photo Source Tabs */}
+                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-850 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setAvatarTab('UPLOAD')}
+                      className={`py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center space-x-1.5 transition-all cursor-pointer ${
+                        avatarTab === 'UPLOAD'
+                          ? 'bg-emerald-500 text-zinc-950 shadow'
+                          : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+                      }`}
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Unggah File</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAvatarTab('PRESET')}
+                      className={`py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center space-x-1.5 transition-all cursor-pointer ${
+                        avatarTab === 'PRESET'
+                          ? 'bg-emerald-500 text-zinc-950 shadow'
+                          : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Preset Avatar</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAvatarTab('URL')}
+                      className={`py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center space-x-1.5 transition-all cursor-pointer ${
+                        avatarTab === 'URL'
+                          ? 'bg-emerald-500 text-zinc-950 shadow'
+                          : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+                      }`}
+                    >
+                      <LinkIcon className="w-3.5 h-3.5" />
+                      <span>Link URL</span>
+                    </button>
+                  </div>
+
+                  {/* Tab Content 1: Upload File */}
+                  {avatarTab === 'UPLOAD' && (
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleAvatarFileUpload}
+                        accept="image/*"
+                        className="hidden"
+                      />
+                      <div
+                        onClick={() => fileInputRef.current?.click()}
+                        className="p-5 border-2 border-dashed border-zinc-800 hover:border-emerald-500/60 rounded-xl bg-zinc-950/40 hover:bg-zinc-950 text-center cursor-pointer transition-all group/upload"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto mb-2 group-hover/upload:scale-110 transition-transform">
+                          <Upload className="w-5 h-5" />
+                        </div>
+                        <p className="text-xs font-bold text-zinc-200">
+                          Klik untuk memilih foto baru dari perangkat
+                        </p>
+                        <p className="text-[11px] text-zinc-500 mt-1">
+                          Mendukung JPG, PNG, WEBP (Otomatis dikompresi)
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tab Content 2: Preset Avatars */}
+                  {avatarTab === 'PRESET' && (
+                    <div className="p-3 bg-zinc-950/60 border border-zinc-850 rounded-xl space-y-2">
+                      <span className="text-[11px] text-zinc-400 block font-medium">
+                        Pilih salah satu avatar profesional di bawah ini:
+                      </span>
+                      <div className="grid grid-cols-5 gap-2.5">
+                        {PRESET_AVATARS.map((url, idx) => {
+                          const isSelected = cleanerAvatarInput === url;
+                          return (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => {
+                                setCleanerAvatarInput(url);
+                                setCleanerUpdateError('');
+                              }}
+                              className={`relative aspect-square rounded-full overflow-hidden border-2 transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'border-emerald-400 ring-2 ring-emerald-500/30 scale-105'
+                                  : 'border-zinc-800 hover:border-zinc-500 opacity-70 hover:opacity-100'
+                              }`}
+                            >
+                              <img
+                                src={url}
+                                alt={`Preset ${idx + 1}`}
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                              />
+                              {isSelected && (
+                                <div className="absolute inset-0 bg-emerald-500/20 flex items-center justify-center">
+                                  <Check className="w-3.5 h-3.5 text-emerald-300 drop-shadow" />
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tab Content 3: URL Link */}
+                  {avatarTab === 'URL' && (
+                    <div className="p-3 bg-zinc-950/60 border border-zinc-850 rounded-xl space-y-2">
+                      <div className="flex space-x-2">
+                        <input
+                          type="url"
+                          value={customUrlInput}
+                          onChange={(e) => setCustomUrlInput(e.target.value)}
+                          placeholder="https://images.unsplash.com/..."
+                          className="flex-1 px-3 py-2 bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-lg text-xs text-zinc-200 placeholder-zinc-700 outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleApplyCustomUrl}
+                          className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold rounded-lg transition-all cursor-pointer"
+                        >
+                          Terapkan
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-zinc-500 block">
+                        Tempel URL gambar langsung untuk menerapkan sebagai foto profil.
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Name Input Field */}
                 <div className="space-y-1.5">
                   <label className="block text-xs font-bold text-zinc-300">
                     Nama Lengkap Petugas <span className="text-rose-400">*</span>
                   </label>
                   <input
                     type="text"
-                    autoFocus
                     value={cleanerNameInput}
                     onChange={(e) => {
                       setCleanerNameInput(e.target.value);
@@ -2012,12 +2303,12 @@ export default function DashboardKepala({
                 <div className="p-3 bg-zinc-900/40 border border-zinc-850 rounded-xl text-[11px] text-zinc-400 flex items-start space-x-2">
                   <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                   <span>
-                    Perubahan nama akan otomatis diperbarui pada daftar penugasan, riwayat laporan kebersihan, dan log absensi.
+                    Perubahan foto dan nama akan langsung diperbarui di database dan disinkronkan ke seluruh sistem (penugasan, laporan kebersihan, dan log absensi).
                   </span>
                 </div>
 
                 {/* Footer Buttons */}
-                <div className="flex items-center justify-end space-x-3 pt-3 border-t border-zinc-800/80 mt-4">
+                <div className="flex items-center justify-end space-x-3 pt-3 border-t border-zinc-800/80">
                   <button
                     type="button"
                     disabled={isUpdatingCleaner}
@@ -2039,7 +2330,7 @@ export default function DashboardKepala({
                     ) : (
                       <>
                         <Check className="w-3.5 h-3.5" />
-                        <span>Simpan Nama Petugas</span>
+                        <span>Simpan Perubahan</span>
                       </>
                     )}
                   </button>
