@@ -37,7 +37,6 @@ import {
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { User, Task, Report, Warehouse, Attendance } from '../types';
-import { AttendanceLocationModal } from './AttendanceLocationModal';
 
 interface DashboardPetugasProps {
   currentUser: User;
@@ -89,8 +88,7 @@ export default function DashboardPetugas({
   const [isFetchingGps, setIsFetchingGps] = useState(false);
   const [gpsStatusMessage, setGpsStatusMessage] = useState<string>('');
   
-  // Modal for viewing full attendance photo & location details
-  const [selectedAttendanceForLocation, setSelectedAttendanceForLocation] = useState<Attendance | null>(null);
+  // Modal for viewing full attendance photo lightbox
   const [selectedAttendancePhoto, setSelectedAttendancePhoto] = useState<string | null>(null);
 
   // Filters for Cleaner's Own Reports ("Laporan Saya")
@@ -1689,8 +1687,7 @@ export default function DashboardPetugas({
                               <th className="py-3 px-3 text-center">Tipe</th>
                               <th className="py-3 px-3">Lokasi</th>
                               <th className="py-3 px-3">Tanggal & Waktu</th>
-                              <th className="py-3 px-3 text-center w-20">Selfie</th>
-                              <th className="py-3 px-3 text-center">Cek Lokasi & Foto</th>
+                              <th className="py-3 px-3 text-center w-20">Foto Selfie</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-zinc-900/60 text-xs">
@@ -1750,9 +1747,9 @@ export default function DashboardPetugas({
                                   <td className="py-3 px-3 text-center">
                                     <div className="flex justify-center">
                                       <div
-                                        onClick={() => setSelectedAttendanceForLocation(log)}
+                                        onClick={() => setSelectedAttendancePhoto(log.photo)}
                                         className="relative w-10 h-8 rounded overflow-hidden border border-zinc-900 cursor-pointer group/att-pic shrink-0"
-                                        title="Klik untuk cek detail foto & lokasi"
+                                        title="Lihat foto selfie"
                                       >
                                         <img
                                           src={log.photo}
@@ -1765,16 +1762,6 @@ export default function DashboardPetugas({
                                         </div>
                                       </div>
                                     </div>
-                                  </td>
-                                  <td className="py-3 px-3 text-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => setSelectedAttendanceForLocation(log)}
-                                      className="inline-flex items-center space-x-1.5 bg-zinc-900/80 hover:bg-emerald-500/10 text-zinc-300 hover:text-emerald-400 border border-zinc-800 hover:border-emerald-500/30 rounded-lg px-2.5 py-1 text-[10px] font-semibold transition-all cursor-pointer shadow-sm"
-                                    >
-                                      <MapPin className="w-3 h-3 text-emerald-400" />
-                                      <span>Cek Lokasi & Foto</span>
-                                    </button>
                                   </td>
                                 </tr>
                               );
@@ -1883,15 +1870,6 @@ export default function DashboardPetugas({
           </div>
         )}
       </AnimatePresence>
-
-      {/* Full Location & Photo Verification Modal */}
-      {selectedAttendanceForLocation && (
-        <AttendanceLocationModal
-          attendance={selectedAttendanceForLocation}
-          allAttendances={attendanceList}
-          onClose={() => setSelectedAttendanceForLocation(null)}
-        />
-      )}
 
       {/* Lightbox Modal for Attendance selfie photo */}
       <AnimatePresence>
