@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle, Info, LogOut, RefreshCw, Sparkles, UserCheck, AlertTriangle } from 'lucide-react';
 import { User, Report, Task, Warehouse, Attendance, SystemSettings } from './types';
@@ -52,6 +52,8 @@ export default function App() {
     message: string;
     onConfirm: () => void;
   } | null>(null);
+
+  const lastRolloverDateRef = useRef<string>('');
 
   useEffect(() => {
     const initAndSubscribe = async () => {
@@ -120,7 +122,7 @@ export default function App() {
   // Daily Automatic Warehouse Status Refresh:
   // Every change of day (new date), all 12 warehouse area statuses automatically refresh to 'KOTOR'
   // if no cleaning report has been made for that warehouse on the new day.
-  // Historical data from previous days is permanently preserved in Firestore.
+  // Historical data from previous days is permanently preserved.
   useEffect(() => {
     if (warehouses.length === 0) return;
 
@@ -129,6 +131,12 @@ export default function App() {
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
     const todayDateStr = `${year}-${month}-${day}`;
+
+    // Only run this check once per date per session to avoid excess writes
+    if (lastRolloverDateRef.current === todayDateStr) {
+      return;
+    }
+    lastRolloverDateRef.current = todayDateStr;
 
     // Warehouses that have already been reported clean TODAY
     const cleanedTodayWhIds = new Set(
@@ -144,7 +152,7 @@ export default function App() {
         .map(r => r.warehouse)
     );
 
-    warehouses.forEach(async (wh) => {
+    const dirtyUpdates = warehouses.filter(wh => {
       let isCleanedToday = false;
       if (wh.lastCleaned) {
         const lcDate = new Date(wh.lastCleaned);
@@ -153,23 +161,19 @@ export default function App() {
         const lcD = String(lcDate.getDate()).padStart(2, '0');
         isCleanedToday = `${lcY}-${lcM}-${lcD}` === todayDateStr;
       }
-
       const hasTodayReport = cleanedTodayWhIds.has(wh.id);
-
-      // If warehouse is marked as BERSIH or DALAM_PENGERJAAN, but was NOT cleaned today
-      // and has no report submitted today, automatically refresh status to KOTOR for the new day
-      if ((wh.status === 'BERSIH' || wh.status === 'DALAM_PENGERJAAN') && !isCleanedToday && !hasTodayReport) {
-        try {
-          await saveWarehouseToFirestore({
-            ...wh,
-            status: 'KOTOR'
-          });
-        } catch (e) {
-          console.error(`Error auto-refreshing warehouse ${wh.id} for new day:`, e);
-        }
-      }
+      return (wh.status === 'BERSIH' || wh.status === 'DALAM_PENGERJAAN') && !isCleanedToday && !hasTodayReport;
     });
-  }, [warehouses, reports]);
+
+    if (dirtyUpdates.length > 0) {
+      dirtyUpdates.forEach((wh) => {
+        saveWarehouseToFirestore({
+          ...wh,
+          status: 'KOTOR'
+        }).catch((e) => console.warn(`Notice auto-refreshing warehouse ${wh.id}:`, e));
+      });
+    }
+  }, [warehouses.length, reports.length]);
 
   const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -604,44 +608,46 @@ export default function App() {
       // Time in HH:MM:SS
       const timeStr = now.toLocaleTimeString('id-ID', { hour12: false });
 
-      const googleMapsLink = (attendanceData.latitude && attendanceData.longitude)
+      const googleMapsLink = (attendanceData.latitude !== undefined && attendanceData.longitude !== undefined)
         ? `https://www.google.com/maps?q=${attendanceData.latitude},${attendanceData.longitude}`
-        : attendanceData.mapUrl;
+        : (attendanceData.mapUrl || '');
       
       const newAttendance: Attendance = {
-        id: 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+        id: 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
         userId: currentUser.id,
-        userName: attendanceData.customUserName || currentUser.name,
-        userEmail: attendanceData.customUserEmail || currentUser.email,
+        userName: (attendanceData.customUserName || currentUser.name).trim(),
+        userEmail: (attendanceData.customUserEmail || currentUser.email).trim(),
         timestamp: now.toISOString(),
         date: dateStr,
         time: timeStr,
         photo: attendanceData.photo,
         location: attendanceData.location,
         type: attendanceData.type,
-        latitude: attendanceData.latitude,
-        longitude: attendanceData.longitude,
-        accuracy: attendanceData.accuracy,
-        address: attendanceData.address,
-        mapUrl: googleMapsLink
       };
+
+      if (attendanceData.latitude !== undefined) newAttendance.latitude = attendanceData.latitude;
+      if (attendanceData.longitude !== undefined) newAttendance.longitude = attendanceData.longitude;
+      if (attendanceData.accuracy !== undefined) newAttendance.accuracy = attendanceData.accuracy;
+      if (attendanceData.address) newAttendance.address = attendanceData.address;
+      if (googleMapsLink) newAttendance.mapUrl = googleMapsLink;
       
       await saveAttendanceToFirestore(newAttendance);
-      showToast(`Absen ${attendanceData.type === 'MASUK' ? 'Masuk' : 'Keluar'} berhasil dicatat beserta lokasi pada pukul ${timeStr}!`, 'success');
-    } catch (err) {
+      showToast(`Absen ${attendanceData.type === 'MASUK' ? 'Masuk' : 'Keluar'} (${newAttendance.userName}) berhasil dicatat pada pukul ${timeStr}!`, 'success');
+    } catch (err: any) {
       console.error("Failed to save attendance:", err);
-      showToast("Gagal menyimpan data absensi.", "error");
+      const errMsg = err?.message || 'Terjadi kesalahan saat menyimpan ke database.';
+      showToast(`Gagal menyimpan data absensi: ${errMsg.slice(0, 70)}`, "error");
     }
   };
 
   const handleDeleteAttendance = (ids: string[]) => {
     setConfirmDialog({
       title: "Hapus Data Absensi",
-      message: `Apakah Anda yakin ingin menghapus ${ids.length} data absensi yang dipilih? Tindakan ini tidak dapat dibatalkan.`,
+      message: `Apakah Anda yakin ingin menghapus ${ids.length} data absensi yang dipilih? Tindakan ini hanya menghapus rekaman buku absen dan TIDAK akan mempengaruhi data pemantauan gudang maupun riwayat laporan pekerjaan.`,
       onConfirm: async () => {
         try {
           await Promise.all(ids.map(id => deleteAttendanceFromFirestore(id)));
-          showToast(`${ids.length} data absensi berhasil dihapus.`, 'success');
+          showToast(`${ids.length} data absensi berhasil dihapus. Data laporan pekerjaan tetap aman.`, 'success');
         } catch (err) {
           console.error("Failed to delete attendance", err);
           showToast("Gagal menghapus data absensi.", "error");

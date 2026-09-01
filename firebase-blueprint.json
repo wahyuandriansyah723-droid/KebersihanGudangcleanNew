@@ -62,7 +62,12 @@
         "time": "string",
         "photo": "string",
         "location": "string",
-        "type": "string"
+        "type": "string",
+        "latitude": "number?",
+        "longitude": "number?",
+        "accuracy": "number?",
+        "address": "string?",
+        "mapUrl": "string?"
       }
     }
   }

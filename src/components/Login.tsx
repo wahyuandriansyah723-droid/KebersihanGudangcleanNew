@@ -190,7 +190,21 @@ export default function Login({ onLogin }: LoginProps) {
         }
 
         if (matchingUsers.length === 0) {
-          throw new Error('Akun dengan email ini belum terdaftar. Silakan daftar terlebih dahulu.');
+          // Derive default name from email if name is not set
+          const emailUserPart = email.split('@')[0] || 'User';
+          const suggestedName = emailUserPart
+            .replace(/[._0-9]/g, ' ')
+            .trim()
+            .split(' ')
+            .filter(Boolean)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ') || emailUserPart;
+          
+          if (!name) {
+            setName(suggestedName);
+          }
+
+          throw new Error(`Akun dengan email "${email}" belum terdaftar. Silakan klik tombol di bawah untuk mendaftarkan akun baru.`);
         }
 
         if (matchingUsers.length === 1) {
@@ -233,6 +247,50 @@ export default function Login({ onLogin }: LoginProps) {
     } catch (err: any) {
       console.error('Manual login/register error:', err);
       setError(err?.message || 'Terjadi kesalahan sistem.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleQuickRegisterAndLogin = async () => {
+    if (!email || !password) {
+      setError('Email dan kata sandi wajib diisi.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const emailUserPart = email.split('@')[0] || 'User';
+      const cleanName = (name || emailUserPart.replace(/[._0-9]/g, ' ').trim().split(' ').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || emailUserPart).trim();
+      
+      const isJapfa = email.trim().toLowerCase().includes('@japfa') || email.trim().toLowerCase().includes('japfa.');
+      const userRole = (role === 'KEPALA_GUDANG' && isJapfa) ? 'KEPALA_GUDANG' : 'PETUGAS_KEBERSIHAN';
+
+      const nameIdSafe = cleanName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
+      const emailIdSafe = email.trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
+      const deterministicId = `user_${emailIdSafe}_${nameIdSafe}`;
+
+      const newUser: User = {
+        id: deterministicId,
+        name: cleanName,
+        email: email.trim().toLowerCase(),
+        role: userRole,
+        password: password,
+        avatarUrl: userRole === 'KEPALA_GUDANG' 
+          ? 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=150'
+          : 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=150'
+      };
+
+      if (rememberMe) {
+        setRememberedCredentials(email, password, cleanName, userRole);
+      } else {
+        clearRememberedCredentials();
+      }
+
+      onLogin(newUser);
+    } catch (err: any) {
+      console.error('Quick register error:', err);
+      setError(err?.message || 'Gagal mendaftarkan akun.');
     } finally {
       setLoading(false);
     }
@@ -616,17 +674,27 @@ export default function Login({ onLogin }: LoginProps) {
             <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-xs font-medium space-y-2">
               <div className="text-center leading-relaxed">{error}</div>
               {activeTab === 'login' && error.includes('belum terdaftar') && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('register');
-                    setError('');
-                  }}
-                  className="w-full py-2 px-3 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold rounded-lg border border-emerald-500/30 text-xs transition-all flex items-center justify-center space-x-1.5 cursor-pointer"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>Daftar Akun Baru dengan Email Ini</span>
-                </button>
+                <div className="pt-1.5 space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={handleQuickRegisterAndLogin}
+                    disabled={loading}
+                    className="w-full py-2.5 px-3 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold rounded-lg text-xs transition-all flex items-center justify-center space-x-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>Daftar Akun Baru &amp; Masuk Sekarang</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('register');
+                      setError('');
+                    }}
+                    className="w-full py-1.5 px-3 bg-zinc-900/80 hover:bg-zinc-850 text-zinc-300 font-medium rounded-lg border border-zinc-800 text-[11px] transition-all flex items-center justify-center space-x-1 cursor-pointer"
+                  >
+                    <span>Lengkapi Data di Formulir Pendaftaran</span>
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -733,43 +801,48 @@ export default function Login({ onLogin }: LoginProps) {
                   }}
                   className={`flex items-center justify-center space-x-2 p-2.5 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
                     role === 'PETUGAS_KEBERSIHAN'
-                      ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400'
+                      ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-sm shadow-emerald-500/10'
                       : 'bg-zinc-950 border-zinc-850 text-zinc-400 hover:border-zinc-750'
                   }`}
                 >
                   <UserIcon className="w-4 h-4" />
                   <span>Petugas</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const isJapfa = email.trim().toLowerCase().includes('@japfa') || email.trim().toLowerCase().includes('japfa.');
-                    if (!isJapfa) {
-                      setError('Hanya akun email dengan domain @Japfa yang diperbolehkan menjadi Kepala Gudang.');
-                      return;
-                    }
-                    setError('');
-                    setRole('KEPALA_GUDANG');
-                  }}
-                  className={`flex items-center justify-center space-x-2 p-2.5 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
-                    role === 'KEPALA_GUDANG'
-                      ? 'bg-sky-500/10 border-sky-500 text-sky-400'
-                      : 'bg-zinc-950 border-zinc-850 text-zinc-400 hover:border-zinc-750'
-                  }`}
-                >
-                  <Shield className="w-4 h-4" />
-                  <span>Kepala</span>
-                </button>
+                {(() => {
+                  const isJapfa = email.trim().toLowerCase().includes('@japfa') || email.trim().toLowerCase().includes('japfa.');
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!isJapfa) {
+                          setError('Hanya akun email dengan domain @Japfa yang diperbolehkan menjadi Kepala Gudang.');
+                          return;
+                        }
+                        setError('');
+                        setRole('KEPALA_GUDANG');
+                      }}
+                      className={`flex items-center justify-center space-x-2 p-2.5 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all ${
+                        !isJapfa
+                          ? 'bg-zinc-950/40 border-zinc-900 text-zinc-600 opacity-40 cursor-not-allowed'
+                          : role === 'KEPALA_GUDANG'
+                          ? 'bg-sky-500/10 border-sky-500 text-sky-400 shadow-sm shadow-sky-500/10 cursor-pointer'
+                          : 'bg-zinc-950 border-zinc-850 text-zinc-400 hover:border-zinc-750 cursor-pointer'
+                      }`}
+                      title={!isJapfa ? 'Hanya email @japfa yang bisa memilih peran ini' : ''}
+                    >
+                      <Shield className="w-4 h-4" />
+                      <span>Kepala</span>
+                    </button>
+                  );
+                })()}
               </div>
 
               {/* Helper text based on email */}
               <p className="text-[10px] leading-relaxed font-medium mt-1.5">
                 {email.trim().toLowerCase().includes('@japfa') || email.trim().toLowerCase().includes('japfa.') ? (
-                  <span className="text-emerald-400/90">✓ Email @Japfa terdeteksi. Anda diperbolehkan mendaftar sebagai Kepala Gudang atau Petugas.</span>
-                ) : email.trim().toLowerCase().includes('@gmail') ? (
-                  <span className="text-amber-400/90">⚠ Akun @gmail hanya diperbolehkan mendaftar sebagai Petugas Gudang.</span>
+                  <span className="text-emerald-400/90">✓ Email @Japfa terverifikasi: Berhak mendapatkan hak akses penuh sebagai Kepala Gudang.</span>
                 ) : (
-                  <span className="text-zinc-500">⚠ Hanya akun email @Japfa yang diperbolehkan menjadi Kepala Gudang. Akun lain hanya bisa mendaftar sebagai Petugas.</span>
+                  <span className="text-amber-400/90">⚠ Akun non-Japfa ({email || 'email luar'}) hanya diperbolehkan menjadi Petugas Kebersihan. Hak akses Kepala Gudang khusus untuk email @japfa.</span>
                 )}
               </p>
             </motion.div>
